@@ -1,0 +1,42 @@
+---
+title: "Duplicate Data"
+
+---
+
+CHUNK 1: Read in dataset for examples
+```{r}
+library(tidyverse)
+uw_data <- read_csv("underwriting_data.csv")
+uw_data
+```
+
+CHUNK 2: Exclude exact duplicate records
+```{r}
+# Exclude exact duplicate records
+unique(uw_data)
+```
+
+CHUNK 3: Exclude duplicate of a specific variable
+```{r}
+# Exclude duplicate of a specific variable
+uw_data %>% filter(!duplicated(ApplicationID))
+```
+
+CHUNK 4: Exclude duplicates, keeping the closest to end
+```{r}
+# Exclude duplicates, keeping the closest to end
+uw_data %>% filter(!duplicated(ApplicationID, fromLast = TRUE))
+```
+
+CHUNK 5:Exclude duplicate columns
+```{r}
+# Exclude duplicate columns
+#MARGIN = 1 will exclude duplicate rows
+ncol(unique.matrix(uw_data, MARGIN = 2))
+unique.matrix(uw_data, MARGIN = 2)
+```
+
+
+
+
+

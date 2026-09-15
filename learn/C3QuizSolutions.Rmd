@@ -1,0 +1,80 @@
+---
+title: "Section C.3 Quiz"
+
+---
+
+Create data frame. 
+```{r}
+# Set seed for reproducibility
+set.seed(45) 
+N <- 25
+
+# Create the data frame
+policy_data <- data.frame(
+  Policy_ID = paste0("P", 1000:(1000 + N - 1)),
+  Region = factor(sample(c("East", "West", "Central"), N, replace = TRUE, prob = c(0.4, 0.35, 0.25))),
+  Exposure_in_Years = round(runif(N, min = 0.5, max = 5), 2),
+  Num_Claims = rpois(N, lambda = 1.5),
+  Premium_Amount = round(rnorm(N, mean = 1500, sd = 400), 2),
+  Vehicle_Type = factor(sample(c("Sedan", "SUV", "Truck"), N, replace = TRUE, prob = c(0.5, 0.3, 0.2))),
+  Inception_Date = seq(ymd('2022-01-01'), by = 'quarter', length.out = N),
+  Agent_Rating = as.character(sample(c(rep("High", 18), rep("NA", 5), rep("Low", 2))))
+)
+
+# Introduce a few zero-exposure records for an edge case question
+policy_data$Exposure_in_Years[c(10, 20)] <- 0
+policy_data$Num_Claims[c(10, 20)] <- 0
+
+# Display the initial structure
+print("Data Structure:")
+str(policy_data)
+print("First 6 Rows:")
+head(policy_data)
+```
+
+
+QUESTION 1: Create a new variable called Frequency that shows claim frequency (number of claims/exposure). 
+```{r}
+policy_data_q1 <- policy_data %>%
+  mutate(
+    Frequency = ifelse(Exposure_in_Years == 0, 0, Num_Claims / Exposure_in_Years),
+  )
+
+policy_data_q1
+```
+
+
+QUESTION 2: Create a subset for policies in the East or West Region that have a premium greater than $1,800
+```{r}
+policy_data_q2 <- policy_data %>%
+  filter(Region %in% c("East", "West") & Premium_Amount > 1800)
+
+policy_data_q2
+```
+
+
+QUESTION 3: Calculate the following summary statistics by Vehicle Type: Total Exposure, Total Claims, and Total Number of Policies. 
+```{r}
+policy_data_q3 <- policy_data %>%
+  group_by(Vehicle_Type) %>%
+  summarize(
+    Total_Exposure = sum(Exposure_in_Years),
+    Total_Claims = sum(Num_Claims),
+    Num_Policies = n()
+  )
+
+policy_data_q3
+```
+
+
+QUESTION 4: Rearrange the dataset first by Region in decreasing (reverse alphabetical) order, and then by Exposure_in_Years in increasing order.
+```{r}
+policy_data_q4 <- policy_data %>%
+  arrange(desc(Region), Exposure_in_Years)
+
+policy_data_q4
+```
+
+
+
+
