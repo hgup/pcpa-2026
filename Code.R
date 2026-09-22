@@ -311,7 +311,9 @@ impact_summary <- tibble(
 impact_summary
 # There is negligible Data loss, eliminating roughly 3% of the portfolio.
 
-# Stratified Train/Test Split (70% train / 30% test)
+
+## 2.7 Train/Test Split (70% train / 30% test) =================================
+
 set.seed(42)
 train_idx <- createDataPartition(clean_df$total_losses, p = 0.70, list = FALSE)
 train <- clean_df[train_idx, ]
@@ -484,6 +486,7 @@ train |> univar_analysis_continuous(pet.Weight, seq(0,240, by=30))
 train |> univar_analysis_continuous(pet.Weight, c(0,30,150,210,240))
 train |> univar_analysis_categorical(pet.Offspring)
 train |> univar_analysis_categorical(pet.Origin)
+train |> univar_analysis_categorical(pet.Microchip)
 
 ### 3.4.3 Owners Variables =====================================================
 train |> univar_analysis_continuous(owner.Age, seq(17,78, by=10))
@@ -625,40 +628,111 @@ breed_signal |>
   pull(pet.Breed))
 
 
-
-
 ### 3.5.4 Interaction Effects ==================================================
 
-analyze_int_age_by_var <- function(df, col){
-  col_name <- rlang::as_name(ensym(col))
-  age_by_col <- df |> 
-    mutate(age_band = cut(pet.Age, breaks = c(0,5,9,13,17,30),
-                          labels=c("0-5","5-9","9-13","13-17","17+")))  |> 
-    group_by(age_band, {{col}}) |> 
-    summarize(mean_pp = round(mean(pure_premium),2),
-              .groups = "drop") |> 
-    mutate({{col}} := forcats::fct_reorder(as.factor({{col}}), mean_pp, .fun = max, .desc = TRUE)) 
+# pet.Age shows the highest correlation with pure premium and is the only variable
+# that our competitor insurance carrier uses. Even veterinary science claims to
+# show that there difference in risk profile of the same aged animals across species
+# or sizes. (https://pubmed.ncbi.nlm.nih.gov/23535614/)
+
+# Thus, pet.Age proves to be a strong candidate for checking interactions.
+
+analyze_int_age_by_var <- function(.data, col) {
+  col_name <- rlang::as_label(enquo(col))
   
-  age_by_col |> 
-    pivot_wider(names_from = {{col}}, values_from = mean_pp)
+  age_by_col <- .data |>
+    mutate(age_band = cut(
+      pet.Age,
+      breaks = c(0, 5, 9, 13, 17, 30),
+      labels = c("0-5", "5-9", "9-13", "13-17", "17+"),
+      include.lowest = TRUE
+    )) |>
+    summarize(
+      mean_pp = round(mean(pure_premium, na.rm = TRUE), 2),
+      .by     = c(age_band, {{ col }})
+    ) |>
+    mutate({{ col }} := fct_reorder(as.factor({{ col }}), mean_pp, .fun = max, .desc = TRUE))
   
-  age_by_col |> 
-    ggplot(aes(x = age_band, y = mean_pp, color = {{col}}, group = {{col}}), linetype = Species) +
+  wide_tbl <- age_by_col |>
+    pivot_wider(names_from = {{ col }}, values_from = mean_pp) |>
+    arrange(age_band)
+  print(wide_tbl)
+  
+  p <- ggplot(age_by_col, aes(x = age_band, y = mean_pp, color = {{ col }}, group = {{ col }})) +
     geom_line(linewidth = 1) +
     geom_point(size = 3) +
-    scale_y_continuous(labels = comma) +
+    scale_y_continuous(labels = scales::comma) +
     labs(
-      title = glue("Mean Pure Premium by pet.Age band and {col_name}"),
-      x = "Age Band",
-      y = "Mean Pure Premium ($)",
-      color = col_name,
-    )
+      title = glue("Mean Pure Premium: pet.Age Band \u00d7 {col_name}"),
+      x     = "Age Band",
+      y     = "Mean Pure Premium ($)",
+      color = col_name
+    ) +
+    theme_minimal()
+  
+  print(p)
+  invisible(wide_tbl)
 }
 
+#### 3.5.4.a pet.Age x pet.Gender ==============================================
+
+# Weak interaction candidate
+train |> analyze_int_age_by_var(pet.Gender)
+
+#### 3.5.4.b pet.Age x pet.Offspring ===========================================
+
+# Weak interaction candidate
+train |> analyze_int_age_by_var(pet.Offspring)
+
+#### 3.5.4.c pet.Age x pet.Type ================================================
+
+# Possible interaction exists!
+train |> analyze_int_age_by_var(pet.Type)
+
+#### 3.5.4.d pet.Age x pet.Group ===============================================
+
+# This interaction looks like a byproduct of the effect of pet.Type, since
+# we are already considering omitting pet.Type in favor of pet.Group as a predictor
+# we can try using pet.Type as an interaction
+train |>
+  mutate(age_band = cut(pet.Age, breaks = c(0, 5, 9, 13, 17, 30),
+                        labels = c("0-5", "5-9", "9-13", "13-17", "17+"))) |>
+  group_by(age_band, pet.Group) |>
+  summarize(
+    mean_pp = round(mean(pure_premium), 2),
+    # Extract species (each group/breed is exclusively Cat or Dog)
+    Species = first(pet.Type),
+    .groups = "drop"
+  ) |>
+  # Order legend by peak height
+  mutate(pet.Group := forcats::fct_reorder(as.factor(pet.Group), mean_pp, .fun = max, .desc = TRUE)) |> 
+  ggplot(aes(
+    x        = age_band,
+    y        = mean_pp,
+    color    = pet.Group,
+    group    = pet.Group,
+    linetype = Species
+  )) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  # Set Dog = dotted, Cat = solid
+  scale_linetype_manual(values = c("Dog" = "dotted", "Cat" = "solid")) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title    = glue("Mean Pure Premium by pet.Age band and pet.Group"),
+    x        = "Age Band",
+    y        = "Mean Pure Premium ($)",
+    color    = glue("Pet Group (by peak)"),
+    linetype = "Species"
+  ) +
+  theme_minimal()
 
 ## 3.5 Feature Engineering =====================================================
 
 apply_feature_engineering <- function(df) {
+  
+  cat_cols <- c("policy.NBRB", "pet.Type", "pet.Group", "pet.Gender", "pet.Offspring",
+    "pet.Microchip", "pet.Origin", "owner.Gender", "owner.Location", "owner.Channel", "breed_outlier")
   
   df |>
     mutate(
@@ -680,12 +754,7 @@ apply_feature_engineering <- function(df) {
         breaks = seq(300, 850, by = 50),
         include.lowest = TRUE
       )
-    )
-  
-  # Set reference levels for categorical variables
-  cat_cols <- c("policy.NBRB", "pet.Type", "pet.Group", "pet.Gender", "pet.Offspring",
-                "pet.Microchip", "pet.Origin", "owner.Gender", "owner.Location", "owner.Channel", "breed_outlier")
-  df <- df |>
+    ) |> 
     mutate(across(all_of(cat_cols), factor)) |>
     mutate(
       pet.Type       = relevel(pet.Type, ref = "Dog"),
@@ -699,28 +768,50 @@ apply_feature_engineering <- function(df) {
       policy.NBRB    = relevel(policy.NBRB, ref = "RB"),
       breed_outlier  = relevel(breed_outlier, ref = "Standard")
     )
-
+  
 }
 
 train <- apply_feature_engineering(train)
 test  <- apply_feature_engineering(test)
 
-test <- test |>
-  mutate(across(all_of(cat_cols), factor)) |>
-  mutate(
-    pet.Type       = relevel(pet.Type, ref = "Dog"),
-    pet.Group      = relevel(pet.Group, ref = "Shorthair"),
-    pet.Gender     = relevel(pet.Gender, ref = "Male"),
-    pet.Offspring  = relevel(pet.Offspring, ref = "No"),
-    pet.Microchip  = relevel(pet.Microchip, ref = "Yes"),
-    pet.Origin     = relevel(pet.Origin, ref = "Store"),
-    owner.Gender   = relevel(owner.Gender, ref = "Male"),
-    owner.Location = relevel(owner.Location, ref = "Suburban"),
-    policy.NBRB    = relevel(policy.NBRB, ref = "RB"),
-    breed_outlier  = relevel(breed_outlier, ref = "Standard")
-  )
-
 # ================ 4. GLM Development & Variable Selection =====================
+
+compare_aic_and_return_better_model <- function(formula_1, formula_2, label_1, label_2, data, p) {
+  m1 <- glm(as.formula(paste(formula_1, collapse = " ")), 
+            data = data, family = statmod::tweedie(var.power = p, link.power = 0))
+  m2 <- glm(as.formula(paste(formula_2, collapse = " ")), 
+            data = data, family = statmod::tweedie(var.power = p, link.power = 0))
+  aic1 <- tweedie_AIC(m1)
+  aic2 <- tweedie_AIC(m2)
+  print(tibble(
+    model     = c(label_1, label_2),
+    AIC       = round(c(aic1, aic2), 2),
+    preferred = c(ifelse(aic1 < aic2, "YES", ""),
+                  ifelse(aic2 < aic1, "YES", ""))
+  ))
+  if (aic2 < aic1) 
+    return(m2)
+  else NULL
+}
+show_tweedie_summary <- function(model, name, p = NULL, baseline = model_A) {
+  tweedie_p <- p
+  aic_val   <- tweedie_AIC(model)
+  dev_exp   <- (1 - model$deviance / model$null.deviance) * 100
+  delta_aic <- aic_val - tweedie_AIC(baseline)
+  
+  cat(glue("
+      ===========================================
+      {name}
+      ===========================================
+      Null Deviance:           {round(model$null.deviance, 2)}
+      Residual Deviance:       {round(model$deviance, 2)}
+      AIC:                     {round(aic_val, 2)}
+      Delta AIC (vs Baseline): {delta_aic}
+      Degrees of Freedom:      {model$df.residual}
+      % Deviance Explained:    {round(dev_exp, 2)}%
+      Tweedie p:               {round(tweedie_p, 4)}
+      \n"))
+}
 
 # Estimate initial Tweedie variance power p via profile likelihood
 p_prof_init <- tweedie.profile(
@@ -741,7 +832,8 @@ p_prof_ref <- tweedie.profile(
 p_initial <- p_prof_ref$p.max
 cat("Initial Tweedie p:", round(p_initial, 4), "\n")
 
-# Model A: Full Baseline GLM (excluding pet.Breed for high cardinality and pet.Type for exact aliasing with pet.Group)
+## Model A: Full Baseline GLM ==================================================
+# (excluding pet.Breed for high cardinality and pet.Type for exact aliasing with pet.Group)
 model_A <- glm(
   total_losses ~ pet.Group + pet.Age + pet.Gender + pet.Height + pet.Weight +
     pet.Offspring + pet.Microchip + pet.Origin + owner.Age + owner.Gender +
@@ -750,31 +842,302 @@ model_A <- glm(
   data   = train,
   family = statmod::tweedie(var.power = p_initial, link.power = 0)
 )
-cat("Model A (Baseline) AIC:", round(tweedie_AIC(model_A), 2), "\n")
 
-# Model B: Backward Variable Selection using drop1 Chi-square test (p < 0.05)
+show_tweedie_summary(model_A, "Model A (Baseline)", p_initial)
+
+
+##  Model B: Backward Variable Selection =======================================
+# (using drop1 Chi-square test (p < 0.05))
+
+# Implement Backward selection
+backward_selection <- function(base_model = model_A, threshold = 0.05){
+  print(glue("{strrep('=',100)}"))
+  print(glue("Backward selection: Remove least significant variables until remaining have p-values < {threshold}"))
+  print(glue("{strrep('=',100)}"))
+  
+  model_current <- base_model
+  
+  # Iteration zero
+  n_round <- 0 
+  print(d <- drop1(model_current, test = "Chisq"))
+  print(td <- tidy(d) |>  select(term, p.value) |> arrange(desc(p.value)) |> mutate(p.value = round(p.value,3)) |> head())
+  lowest_p <- td[[1,2]]
+  
+  while(lowest_p > threshold){
+    print(glue("{strrep('=',50)}"))
+    print(glue("Round {n_round <- n_round+1 } - remove {td[[1,1]]} (p = {lowest_p})"))
+    print(glue("{strrep('=',50)}"))
+    model_current <- update(model_current, as.formula(glue(". ~ . - {td[[1,1]]}")))
+    print(d <- drop1(model_current, test = "Chisq"))
+    print(td <- tidy(d) |>  select(term, p.value) |> arrange(desc(p.value)) |> mutate(p.value = round(p.value,3)) |> head())
+    lowest_p <- td[[1,2]]
+  }
+  
+  return(model_current)
+}
+
 # Variables removed: owner.Channel, owner.Age, owner.Location, owner.CreditScore, pet.Origin, pet.Microchip, pet.Offspring
-model_B <- glm(
-  total_losses ~ pet.Group + pet.Age + pet.Gender + pet.Height + pet.Weight +
-    owner.PetCount + policy.NBRB + offset(log(policy.Exposure)),
-  data   = train,
-  family = statmod::tweedie(var.power = p_initial, link.power = 0)
+model_B <- backward_selection()
+show_tweedie_summary(model_B, "Model B (Backward Selection)", p_initial)
+(base_formula <- deparse1(formula(model_B)))
+
+## Model B1: Add Binned Predictors =======================================================
+
+compare_aic_and_return_better_model(
+  base_formula,
+  gsub("owner.PetCount", "pet_count_band", base_formula),
+  "Raw: owner.PetCount (Linear)",
+  "Binned: pet_count_band (1, 2, 3, 4, 5+)",
+  train, p_initial
 )
-cat("Model B (Selected Main Effects) AIC:", round(tweedie_AIC(model_B), 2), "\n")
+# We prefer a more parsimonious model, and thus don't add binned owner.PetCount
+best_formula <- base_formula
 
-# Model C: Add Quadratic Senior Age effect I(pet.Age^2)
-model_C <- update(model_B, . ~ . + I(pet.Age^2))
-cat("Model C (+ Quadratic Age) AIC:", round(tweedie_AIC(model_C), 2), "\n")
+## Model C: Add Quadratic Age effect I(pet.Age^2) ==============================
 
-# Model D: Add Morphology & Build Interaction pet.Height:pet.Weight
-model_D <- update(model_C, . ~ . + pet.Height:pet.Weight)
-cat("Model D (+ Morphology Interaction) AIC:", round(tweedie_AIC(model_D), 2), "\n")
+formula_age_sq <- glue("{best_formula} + I(pet.Age^2)")
+model_C <- compare_aic_and_return_better_model(
+  base_formula,
+  formula_age_sq,
+  "Linear Age",
+  "Linear + Quadratic Age (Age^2)",
+  train, p_initial
+)
+# AIC has improved drastically by adding squared age
+best_formula <- formula_age_sq
+show_tweedie_summary(model_C, "Model C (Quadratic Age effect)", p_initial)
 
-# Model E: Add Outlier Breed Rating Tier
-model_E <- update(model_D, . ~ . + breed_outlier)
-cat("Model E (+ Outlier Breed Tier) AIC:", round(tweedie_AIC(model_E), 2), "\n")
+## Model D: Add pet.Height:pet.Weight interaction ==============================
+
+formula_age_weight <- glue("{best_formula} + pet.Height:pet.Weight")
+model_D <- compare_aic_and_return_better_model(
+  base_formula,
+  formula_age_weight,
+  "Quadratic Age (Age^2)",
+  "Age x Weight Interaction",
+  train, p_initial
+)
+# AIC has improved drastically by adding squared age
+best_formula <- formula_age_weight
+show_tweedie_summary(model_D, "Model D (Height x Weight interaction)", p_initial)
+
+## Model E: Add Outlier Breed Rating Tier ======================================
+
+formula_age_weight <- glue("{best_formula} + breed_outlier")
+model_E <- compare_aic_and_return_better_model(
+  base_formula,
+  formula_age_weight,
+  "Height x Weight Interaction",
+  "3 Tier Breed surcharge",
+  train, p_initial
+)
+show_tweedie_summary(model_E, "Model E (Breed Rating)", p_initial)
+
+## Summary of Candidate Models =================================================
+
+candidate_models <- list(
+  "Model A (Full Baseline)"               = model_A,
+  "Model B (Selected Main Effects)"       = model_B,
+  "Model C (+ Quadratic Age)"             = model_C,
+  "Model D (+ Morphology Interaction)"    = model_D,
+  "Model E (+ Outlier Breed Rating Tier)" = model_E
+)
+
+candidate_comparison <- tibble(
+  Model = names(candidate_models),
+  AIC = sapply(candidate_models, function(m) round(tweedie_AIC(m), 2)),
+  Residual_Deviance = sapply(candidate_models, function(m) round(m$deviance, 1)),
+  Pct_Dev_Explained = sapply(candidate_models, function(m) paste0(round((1 - m$deviance / m$null.deviance) * 100, 2), "%")),
+  Parameters = sapply(candidate_models, function(m) length(coef(m))),
+  Delta_AIC = sapply(candidate_models, function(m) round(tweedie_AIC(m) - tweedie_AIC(model_A), 2))
+)
+
+candidate_comparison
+
+## Summary of Best Model =======================================================
+
+model_refined <- model_E
+summary(model_refined)
 
 # ================= 5. Diagnostics & Iterative Refinement ======================
+
+train_residuals <- train |> 
+  mutate(
+    fitted_values = predict(model_refined, type = "response"),
+    deviance_resids = residuals(model_refined, type = "deviance"),
+    pearon_resids = residuals(model_refined, type = "pearson"),
+    log_fitted = log(fitted_values),
+    decile = ntile(fitted_values, 10)
+  )
+
+## 5.1 Deviance Residuals ======================================================
+
+# Skewed to the negative side, this doesn't mean the model overpredicts.
+# For a tweedie GLM where 88% of policies have zero claims, deviance for any
+# non-claimant is mathematically bounded below zero. The remaining 12% of claimant
+# policies exhibit large positive residuals balancing the overall loss deviance.
+summary(train_residuals$deviance_resids)
+
+plot_dev_res_vs_var <- function(.data, var, x_lab, y_lab){
+  .data |> 
+    ggplot(aes(x = {{var}}, y = deviance_resids)) +
+    geom_point(alpha = 0.2, color = "steelblue") +
+    geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+    geom_smooth(formula = y ~ x, method = "loess", color = "darkgreen", se = FALSE) +
+    labs(
+      title = glue("{y_lab} vs {x_lab}"),
+      x = x_lab,
+      y = y_lab
+    ) +
+    theme_minimal()
+}
+
+### 5.1.1 Deviance Residuals vs Fitted Values ==================================
+
+train_residuals |> plot_dev_res_vs_var(fitted_values, "Fitted Values", "Deviance Residuals")
+
+### 5.1.2 Deviance Residuals Summary ===========================================
+(residual_summary <- train_residuals |> 
+  group_by(decile) |> 
+  summarize(
+    n_policies = n(),
+    mean_resid = round(mean(deviance_resids),4),
+    median_resid = round(median(deviance_resids),4)
+  )
+)
+residual_summary |> 
+  ggplot(aes(x = decile, y = mean_resid)) +
+  geom_point(fill = "steelblue") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Mean Deviance Residual by Fitted Value Decile",
+    x = "Decile (1 = Lowest Fitted, 10 = Highest Fitted)",
+    y = "Mean Deviance Residual"
+  ) +
+  theme_minimal()
+
+### 5.1.3 Deviance Residuals vs Key Predictors =================================
+
+train_residuals |> plot_dev_res_vs_var(pet.Age, "Pet Age", "Deviance Residuals")
+train_residuals |> plot_dev_res_vs_var(pet.Group, "Pet Group", "Deviance Residuals")
+train_residuals |> plot_dev_res_vs_var(pet.Gender, "Pet Gender", "Deviance Residuals")
+train_residuals |> plot_dev_res_vs_var(pet.Height, "Pet Height", "Deviance Residuals")
+train_residuals |> plot_dev_res_vs_var(pet.Weight, "Pet Weight", "Deviance Residuals")
+train_residuals |> plot_dev_res_vs_var(policy.NBRB, "Policy NBRB", "Deviance Residuals")
+
+## 5.2 Q-Q Normality Plot ======================================================
+
+ggplot(train_residuals, aes(sample = deviance_resids)) +
+  stat_qq(alpha = 0.3, color = "steelblue") +
+  stat_qq_line(color = "red", linetype = "dashed") +
+  labs(
+    title = "Normal Q-Q Plot of Deviance Residuals",
+    x = "Theoretical Quantiles",
+    y = "Sample Quantiles"
+  ) +
+  theme_minimal()
+
+train_residuals |> 
+  filter(total_losses > 0) |> 
+  ggplot(aes(sample = deviance_resids)) +
+  stat_qq(alpha = 0.3, color = "steelblue") +
+  stat_qq_line(color = "red", linetype = "dashed") +
+  labs(
+    title = "Normal Q-Q Plot of Deviance Residuals (Claimants Only)",
+    x = "Theoretical Quantiles",
+    y = "Sample Quantiles"
+  ) +
+  theme_minimal()
+
+train_residuals |> 
+  arrange(desc(abs(deviance_resids))) |> 
+  select(policy.ID, pure_premium, fitted_values, deviance_resids) |> 
+  head(20)
+
+# We note a big deviation for specific policies which show large deviances,
+# it might be worth looking at influential observations that affect our model.
+
+## 5.3 Influential Observations ================================================
+
+### 5.3.1 Cook's Distance =======================================================
+
+{ # Compute Cook's Distance
+  cooks_d <- cooks.distance(model_refined)
+  n <- nrow(train_residuals)
+  threshold <- 4/n
+  train_residuals <- train_residuals |> 
+    mutate(cooks_d = cooks_d)
+  tibble(
+    "Cook's distance threshold (4/n)" = glue(round(threshold,6)),
+    "Number of influenctial observations" = sum(cooks_d > threshold)
+  )
+}
+# Very few claims cross the 4/n threshold
+train_residuals |> 
+  mutate(obs_index = row_number()) |> 
+  ggplot(aes(x = obs_index, y = cooks_d)) +
+  geom_point(alpha = 0.2, color = "steelblue") +
+  geom_hline(yintercept = threshold,  color = "red", linetype = "dashed") +
+  labs(
+    title = "Cook's distance by observation",
+    subtitle = glue("Red line = threshold of 4/n = {round(threshold, 6)}"),
+    x = "Observation Index",
+    y = "Cook's Distance"
+  ) + theme_minimal()
+
+# Top Influential observations
+train_residuals |> 
+  filter(cooks_d > threshold) |> 
+  arrange(desc(cooks_d)) |> 
+  select(policy.ID , pure_premium, fitted_values, deviance_resids, cooks_d) |> 
+  head(20)
+
+### 5.3.2 Leverage ==============================================================
+
+{ # Compute Leverage
+  leverage <- hatvalues(model_refined)
+  lev_threshold <- 2 * length(coef(model_refined)) / n
+  train_residuals <- train_residuals |> 
+    mutate(leverage = leverage)
+  tibble(
+    "Leverage threshold (2p/n)" = glue(round(lev_threshold,6)),
+    "Number of influenctial observations" = sum(leverage > lev_threshold)
+  )
+}
+
+train_residuals |> 
+  mutate(obs_index = row_number()) |> 
+  ggplot(aes(x = obs_index, y = leverage)) +
+  geom_point(alpha = 0.2, color = "steelblue") +
+  geom_hline(yintercept = lev_threshold,  color = "red", linetype = "dashed") +
+  labs(
+    title = "Leverage by observation",
+    subtitle = glue("Red line = threshold of 2p/n = {round(lev_threshold, 6)}"),
+    x = "Observation Index",
+    y = "Leverage"
+  ) + theme_minimal()
+
+## 5.4 Segment Level Diagnostics ===============================================
+segment_diagnostic <- function(var){
+  var_name <- rlang::as_name(ensym(var))
+  seg_diag <- train_residuals |> 
+    group_by({{var}}) |> 
+    summarize(
+      n_policies = n(),
+      mean_resid = round(mean(deviance_resids), 4),
+      mean_pp = round(mean(pure_premium), 4),
+      mean_fitted = round(mean(fitted_values / policy.Exposure), 4)
+    ) |> 
+    arrange(desc(abs(mean_resid)))
+  return(seg_diag)
+}
+
+segment_diagnostic(pet.Group)
+segment_diagnostic(pet.Gender)
+segment_diagnostic(policy.NBRB)
+segment_diagnostic(breed_outlier)
+
+## 5.5 Iterative Refinement ====================================================
 
 # Model F: Add Quadratic Height I(pet.Height^2) to capture non-linear stature/volume scaling
 model_F <- update(model_E, . ~ . + I(pet.Height^2))
@@ -888,3 +1251,4 @@ scored_output <- assess_clean |>
 
 write.csv(scored_output, "scored.csv", row.names = FALSE)
 cat(sprintf("Scored %d records. File saved to scored.csv\n", nrow(scored_output)))
+

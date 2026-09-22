@@ -55,6 +55,7 @@ glimpse(train)
 
 ```{r}
 train_residuals <- train |> 
+  filter(total_losses > 0) |> 
   mutate(
     fitted_values = predict(model_refined, type = "response"),
     deviance_resids = residuals(model_refined, type = "deviance"),
