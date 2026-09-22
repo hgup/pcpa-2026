@@ -445,6 +445,7 @@ in pet.Group, thus we can include either of them.
 univar_analysis_continuous(pet.Age, seq(1,17, by=2))
 ```
 
+We observe 
 
 ### Gender
 
