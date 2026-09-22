@@ -1,0 +1,61 @@
+---
+title: "scratch"
+output: html_document
+---
+
+
+# 1. Making better variables
+
+```{r functions}
+get_empirical_breakdown <- function(df, var) {
+  df |>
+    group_by(.data[[var]]) |>
+    summarize(
+      Policies         = n(),
+      Policy_Share_Pct = round(n() / nrow(df) * 100, 2),
+      Claim_Frequency  = round(sum(n_claims) / sum(policy.Exposure), 4),
+      Avg_Severity     = round(sum(total_losses) / pmax(1, sum(n_claims)), 2),
+      Total_Exposure   = round(sum(policy.Exposure), 2),
+      Exposure_Share   = round(sum(policy.Exposure) / sum(df$policy.Exposure) * 100, 2),
+      Total_Claims     = sum(n_claims),
+      Total_Loss       = round(sum(total_losses), 2),
+      Pure_Premium     = round(sum(total_losses) / sum(policy.Exposure), 2),
+      .groups = "drop"
+    )
+}
+
+vars_to_check <- c(
+      "pet.Type",
+      "owner.Location",
+      "owner.PetCount",
+      "pet.Gender",
+      "owner.Channel",
+      "policy.NBRB",
+      "pet.Offspring"
+)
+breakdowns <- vars_to_check |>
+  rlang::set_names() |>
+  map(~ get_empirical_breakdown(df, .x))
+
+breakdowns$owner.Location
+breakdowns$pet.Type
+breakdowns$pet.Offspring
+(petcount_breakdown <- breakdowns$owner.PetCount)
+
+```
+
+```{r}
+df <- df |>
+  mutate(
+    owner.PetCount_Rating = factor(
+      case_when(
+        owner.PetCount == 1 ~ "1",
+        owner.PetCount == 2 ~ "2",
+        owner.PetCount == 3 ~ "3",
+        owner.PetCount == 4 ~ "4",
+        owner.PetCount >= 5 ~ "5+"
+      ),
+      levels = c("1", "2", "3", "4", "5+") # '1' is the base/reference level
+    )
+  )
+```

@@ -1,0 +1,475 @@
+---
+title: "Pet Insurance Model Diagnostics"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: false
+    theme: readable
+    highlight: tango
+    code_folding: show
+---
+
+```{r}
+if (!requireNamespace("pacman", quietly = TRUE)) {
+  install.packages("pacman")
+}
+pacman::p_load(
+  tidyverse,  # covers dplyr, ggplot2, lubridate, tidyr, stringr, purrr, forcats
+  statmod, tweedie,
+  glue, broom
+)
+```
+
+```{r}
+p <- readRDS("tweedie_p.rds")
+model_refined <- readRDS("model_E.rds")
+train <- read.csv("data/train_engineered.csv")
+
+glue("Using Tweedie p: {round(p,4)}")
+```
+```{r}
+cat_cols <- c("policy.NBRB","pet.Type",
+              "pet.Group","pet.Breed","pet.Gender","pet.Offspring","pet.Microchip","pet.Origin",
+              "owner.Gender","owner.Location","owner.Channel"
+              )
+train <- train |> 
+  mutate(across(all_of(cat_cols), factor)) |> 
+  mutate(
+    pet.Type = relevel(pet.Type, ref = "Dog"),
+    pet.Group = relevel(pet.Group, ref = "Shorthair"),
+    pet.Gender = relevel(pet.Gender, ref = "Male"),
+    pet.Offspring = relevel(pet.Offspring, ref = "No"),
+    pet.Microchip = relevel(pet.Microchip, ref = "Yes"),
+    pet.Origin = relevel(pet.Origin, ref = "Store"),
+    pet.Origin = relevel(pet.Origin, ref = "Store"),
+    owner.Gender = relevel(owner.Gender, ref = "Male"),
+    owner.Location = relevel(owner.Location, ref = "Suburban"),
+    policy.NBRB = relevel(policy.NBRB, ref = "RB")
+  )
+
+glimpse(train)
+```
+
+```{r}
+train_residuals <- train |> 
+  mutate(
+    fitted_values = predict(model_refined, type = "response"),
+    deviance_resids = residuals(model_refined, type = "deviance"),
+    pearon_resids = residuals(model_refined, type = "pearson"),
+    log_fitted = log(fitted_values),
+    decile = ntile(fitted_values, 10)
+  )
+```
+
+```{r}
+summary(train_residuals$deviance_resids)
+```
+Deviance residuals are skewed to the negative side (median ~ -6.27, mean ~ -4.60).
+Crucially, this does NOT mean the model is overpredicting. In a Tweedie GLM where 88%
+of policies have zero claims ($y_i = 0$), the deviance residual for any non-claimant
+is mathematically bounded below zero: $d_i = -\sqrt{2 w_i \mu_i^{2-p} / (2-p)} < 0$.
+The remaining 12% of claimant policies exhibit large positive residuals (up to +66.5),
+balancing the overall loss deviance. In fact, total portfolio Actual / Expected is 0.996.
+
+```{r}
+ggplot(train_residuals, aes(x = fitted_values, y = deviance_resids)) +
+  geom_point(alpha = 0.2, color = "steelblue") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  geom_smooth(formula = y ~ x, method = "loess", color = "darkgreen", se = FALSE) +
+  labs(
+    title = "Deviance Residuals vs Fitted Values",
+    x = "Fitted Values",
+    y = "Deviance Residuals"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+train_residuals |> 
+  filter(total_losses > 0) |> 
+  ggplot(aes(x = fitted_values, y = deviance_resids)) +
+    geom_point(alpha = 0.2, color = "steelblue") +
+    geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+    geom_smooth(formula = y ~ x, method = "loess", color = "darkgreen", se = FALSE) +
+    labs(
+      title = "Deviance Residuals vs Fitted Values",
+      x = "Fitted Values",
+      y = "Deviance Residuals"
+    ) +
+    theme_minimal()
+```
+
+```{r}
+train_residuals |> 
+  group_by(decile) |> 
+  summarize(
+    n_policies = n(),
+    mean_resid = round(mean(deviance_resids), 4),
+    median_resid = round(median(deviance_resids), 4)
+  )
+```
+
+```{r}
+train_residuals |> 
+  group_by(decile) |> 
+  summarize(mean_resid = mean(deviance_resids)) |> 
+  ggplot(aes(x = decile, y = mean_resid)) +
+  geom_point(fill = "steelblue") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Mean Deviance Residual by Fitted Value Decile",
+    x = "Decile (1 = Lowest Fitted, 10 = Highest Fitted)",
+    y = "Mean Deviance Residual"
+  ) +
+  theme_minimal()
+```
+
+## Deviance Residuals vs Key Predictors
+
+```{r}
+plot_dev_res_vs_var <- function(var){
+  var_name <- rlang::as_name(ensym(var))
+  p <- ggplot(train_residuals, aes(x = {{var}}, y = deviance_resids)) +
+    geom_point(alpha = 0.2, color = "steelblue") +
+    geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+    geom_smooth(formula = y ~ x, method = "loess", color = "darkgreen", se = FALSE) +
+    labs(
+      title = glue("Deviance Residuals vs {var_name}"),
+      x = var_name,
+      y = "Deviance Residuals"
+    ) +
+    theme_minimal()
+  
+  return(p)
+}
+```
+
+```{r}
+plot_dev_res_vs_var(pet.Age)
+```
+
+
+```{r}
+plot_dev_res_vs_var(pet.Group)
+```
+
+
+```{r}
+plot_dev_res_vs_var(pet.Gender)
+```
+
+
+```{r}
+plot_dev_res_vs_var(pet.Height)
+```
+
+```{r}
+plot_dev_res_vs_var(pet.Weight)
+```
+
+```{r}
+plot_dev_res_vs_var(policy.NBRB)
+```
+# Q-Q Plot
+
+```{r}
+ggplot(train_residuals, aes(sample = deviance_resids)) +
+  stat_qq(alpha = 0.3, color = "steelblue") +
+  stat_qq_line(color = "red", linetype = "dashed") +
+  labs(
+    title = "Normal Q-Q Plot of Deviance Residuals",
+    x = "Theoretical Quantiles",
+    y = "Sample Quantiles"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+train_residuals |> 
+  filter(total_losses > 0) |> 
+  ggplot(aes(sample = deviance_resids)) +
+    stat_qq(alpha = 0.3, color = "steelblue") +
+    stat_qq_line(color = "red", linetype = "dashed") +
+    labs(
+      title = "Normal Q-Q Plot of Deviance Residuals",
+      x = "Theoretical Quantiles",
+      y = "Sample Quantiles"
+    ) +
+  theme_minimal()
+```
+```{r}
+train_residuals |> 
+  arrange(desc(abs(deviance_resids))) |> 
+  select(policy.ID, pure_premium, fitted_values, deviance_resids) |> 
+  head(20)
+```
+
+We note a big deviation, for these specific policies which are showing us large deviances.
+
+
+# Look at Influential Observations
+
+```{r}
+cooks_d <- cooks.distance(model_refined)
+n <- nrow(train_residuals)
+threshold <- 4/n
+
+train_residuals <- train_residuals |> 
+  mutate(cooks_d = cooks_d)
+
+tibble(
+  "Cook's distance threshold (4/n)" = glue(round(threshold,6)),
+  "Number of influenctial observations" = sum(cooks_d > threshold)
+)
+```
+
+```{r}
+train_residuals |> 
+  mutate(obs_index = row_number()) |> 
+  ggplot(aes(x = obs_index, y = cooks_d)) +
+  geom_point(alpha = 0.1, color = "steelblue") +
+  geom_hline(yintercept = threshold,  color = "red", linetype = "dashed") +
+  labs(
+    title = "Cook's distance by observation",
+    subtitle = glue("Red line = threshold of 4/n = {round(threshold, 6)}"),
+    x = "Observation Index",
+    y = "Cook's Distance"
+  ) + theme_minimal()
+  
+```
+```{r}
+train_residuals |> 
+  filter(cooks_d > threshold) |> 
+  arrange(desc(cooks_d)) |> 
+  select(policy.ID , pure_premium, fitted_values, deviance_resids, cooks_d) |> 
+  head(20)
+```
+
+## Leverage
+
+```{r}
+leverage <- hatvalues(model_refined)
+lev_threshold <- 2 * length(coef(model_refined)) / n
+
+train_residuals <- train_residuals |> 
+  mutate(leverage = leverage)
+
+tibble(
+  "Leverage threshold (2p/n)" = glue(round(lev_threshold,6)),
+  "Number of influenctial observations" = sum(leverage > lev_threshold)
+)
+```
+
+```{r}
+train_residuals |> 
+  mutate(obs_index = row_number()) |> 
+  ggplot(aes(x = obs_index, y = leverage)) +
+  geom_point(alpha = 0.1, color = "steelblue") +
+  geom_hline(yintercept = lev_threshold,  color = "red", linetype = "dashed") +
+  labs(
+    title = "Leverage by observation",
+    subtitle = glue("Red line = threshold of 2p/n = {round(lev_threshold, 6)}"),
+    x = "Observation Index",
+    y = "Leverage"
+  ) + theme_minimal()
+
+```
+
+```{r}
+train_residuals |> 
+  filter(cooks_d > threshold & leverage > lev_threshold) |> 
+  arrange(desc(cooks_d)) |> 
+  select(policy.ID, pure_premium, fitted_values, deviance_resids, cooks_d, leverage) |> 
+  head(20)
+```
+
+
+# Segment level diagnostics
+
+```{r}
+segment_diagnostic <- function(var){
+  var_name <- rlang::as_name(ensym(var))
+  seg_diag <- train_residuals |> 
+    group_by({{var}}) |> 
+    summarize(
+      n_policies = n(),
+      mean_resid = round(mean(deviance_resids), 4),
+      mean_pp = round(mean(pure_premium), 4),
+      mean_fitted = round(mean(fitted_values / policy.Exposure), 4)
+    ) |> 
+    arrange(desc(abs(mean_resid)))
+  return(seg_diag)
+}
+```
+
+## pet.Group
+
+```{r}
+segment_diagnostic(pet.Group)
+```
+
+## pet.Gender
+
+```{r}
+segment_diagnostic(pet.Gender)
+```
+
+## policy.NBRB
+
+```{r}
+segment_diagnostic(policy.NBRB)
+```
+
+## breed_outlier
+
+```{r}
+segment_diagnostic(breed_outlier)
+```
+
+```{r}
+write_csv(train_residuals, "data/train_residuals.csv")
+```
+
+# Iterative Refinement
+
+```{r}
+model_summary <- function(model, label) {
+  glue("
+       {label}
+       AIC:\t\t {round(tweedie_AIC(model),2)}
+       % Dev Explained:\t {round((1- model$deviance / model$null.deviance)* 100, 2)}%
+   ")
+}
+```
+
+```{r}
+plot_resids <- function(model, data, title) {
+  data |> 
+    mutate(
+      fitted_vals = predict(model, type = "response"),
+      deviance_res = residuals(model, type = "deviance")
+    ) |> 
+    filter(total_losses > 0) |> 
+    ggplot(aes(x = fitted_vals, y = deviance_res)) +
+    geom_point(alpha = 0.3, color = "steelblue") +
+    geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+    geom_smooth(formula = y ~ x, method = "loess", color = "darkgreen", se = FALSE) +
+    labs(
+      title = title,
+      x = "Fitted Values",
+      y = "Deviance Residuals"
+    ) + theme_minimal()
+}
+```
+
+## Baseline Diagnostic (Model E)
+
+```{r}
+model_E <- readRDS("model_E.rds")
+model_summary(model_E, "Model E (Baseline)")
+```
+
+```{r}
+train_residuals |> 
+  filter(total_losses > 0) |> 
+  ggplot(aes(x = fitted_values, y = deviance_resids)) +
+    geom_point(alpha = 0.1, color = "steelblue") +
+    geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+    geom_smooth(formula = y ~ x, method = "loess", color = "darkgreen", se = FALSE) +
+    labs(
+      title = "Deviance Residuals vs Fitted Values (Model E - Claimants Only)",
+      x = "Fitted Values",
+      y = "Deviance Residuals"
+    ) +
+    theme_minimal()
+```
+
+## Refinement Step: Model F (+ Quadratic Height)
+
+In our residual checks vs `pet.Height`, a subtle parabolic curvature remained at extreme heights. Testing quadratic physical dimensions, adding `I(pet.Height^2)` captures non-linear body volume/surface area effects.
+
+```{r}
+form_F <- update(formula(model_E), . ~ . + I(pet.Height^2))
+
+model_F <- glm(
+  form_F,
+  data = train,
+  family = statmod::tweedie(var.power = p, link.power = 0)
+)
+
+model_summary(model_F, "Model F (+ Quadratic Height)")
+```
+
+```{r}
+# Parameter significance
+tidy(model_F) |> 
+  filter(term == "I(pet.Height^2)") |> 
+  select(term, estimate, std.error, statistic, p.value)
+```
+
+The quadratic height term is statistically significant ($p = 0.004$) and improves AIC by 3.42 points (from 163,207.7 to 163,204.3).
+
+```{r}
+# Save Model F
+saveRDS(model_F, "model_F.rds")
+```
+
+```{r}
+plot_resids(model_F, train, "Deviance Residuals vs Fitted Values (Model F - Claimants Only)")
+```
+
+## Dunn-Smyth (Randomized Quantile) Residuals
+
+Because 88% of pet policies have zero claims, raw Tweedie deviance residuals are bounded below by $-\sqrt{2 w_i \mu_i^{2-p} / (2-p)} < 0$ and cannot be normally distributed. To properly assess whether the Tweedie distributional assumption holds, we examine **Dunn-Smyth (randomized quantile) residuals** via `statmod::qresid()`.
+
+```{r}
+q_resids <- statmod::qresid(model_F)
+
+summary(q_resids)
+```
+
+```{r}
+# Q-Q Plot of Randomized Quantile Residuals
+tibble(q_resids = q_resids) |> 
+  ggplot(aes(sample = q_resids)) +
+  stat_qq(alpha = 0.2, color = "steelblue") +
+  stat_qq_line(color = "red", linetype = "dashed") +
+  labs(
+    title = "Normal Q-Q Plot of Dunn-Smyth (Randomized Quantile) Residuals",
+    subtitle = "Model F with Tweedie p = 1.38",
+    x = "Theoretical Standard Normal Quantiles",
+    y = "Sample Quantiles"
+  ) +
+  theme_minimal()
+```
+
+When randomized quantile residuals are evaluated, the mean is virtually zero (0.013) and the median is 0.026, aligning closely with the standard normal line across the bulk of the distribution. This confirms the Tweedie $p \approx 1.38$ assumption is well-specified.
+
+## Portfolio Calibration & Decile Lift (A/E Analysis)
+
+```{r}
+train |> 
+  mutate(
+    fitted = predict(model_F, type = "response"),
+    decile = ntile(fitted, 10)
+  ) |> 
+  group_by(decile) |> 
+  summarize(
+    n_policies = n(),
+    exposure = sum(policy.Exposure),
+    actual_losses = sum(total_losses),
+    expected_losses = sum(fitted),
+    actual_pp = round(actual_losses / exposure, 2),
+    expected_pp = round(expected_losses / exposure, 2),
+    ae_ratio = round(actual_losses / expected_losses, 4)
+  )
+```
+
+
+
+
+

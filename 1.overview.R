@@ -1,14 +1,10 @@
-# ===============================================
-# SETUP (set to automatically install packages if unavailable)
-# ===============================================
+# ==== SETUP (set to automatically install packages if unavailable) ====
 if (!requireNamespace("pacman", quietly = TRUE)) { install.packages("pacman") }
 library(pacman)
 pacman::p_load(tidyverse, lubridate, ggplot2, dplyr, rlang, janitor, skimr, naniar, glue)
 
 
-# ===============================================
-# INPUTS (appendices and raw data)
-# ===============================================
+# ==== INPUTS (appendices and raw data) ====
 
 appendix_breed_cats <- "Abyssinian, American Bobtail, American Curl, American Shorthair, American Wirehair, Asian, Asian Semi Longhair, Australian Mist, Balinese, Bambino, Bengal, Birman, Bombay, Brazilian Shorthair, British Shorthair, Burmese, Chantilly Tiffany, Chartreux, Chausie, Cornish Rex, Cymric, Cyprus, Devon Rex, Donskoy, Egyptian Mau, European Burmese, European Shorthair, Exotic Shorthair, German Rex, Havana, Havana Brown, Highlander, Himalayan, Japanese Bobtail, Javanese, Korat, Kurilian Bobtail, LaPerm, Lykoi, Maine Coon, Manx, Minskin, Munchkin, Napoleon, Nebelung, Ocicat, Ojos Azules, Oriental, Oriental Bicolor, Oriental Longhair, Persian, Peterbald, Pixiebob, Ragamuffin, Ragdoll, Russian Blue, Scottish Fold, Selkirk Rex, Seychellois, Siamese, Siberian, Siberian Forest, Singapura, Snowshoe, Sokoke, Somali, Sphynx, Thai, Tiffany, Tonkinese, Toybob, Toyger, Turkish Angora, Turkish Van, Ukrainian Levkoy, Ussuri, York Chocolate"
 appendix_breed_dogs <- " Afghan Hound, Airedale Terrier, Akita, Alaskan Malamute, American Eskimo Dog, American Foxhound, American Staffordshire Terrier, Anatolian Shepherd Dog, Australian Cattle Dog, Australian Shepherd, Australian Terrier, Basenji, Basset Hound, Beagle, Bearded Collie, Beauceron, Bedlington Terrier, Belgian Malinois, Belgian Sheepdog, Belgian Tervuren, Bernese Mountain Dog, Bichon Frise, Black and Tan Coonhound, Bloodhound, Border Collie, Border Terrier, Borzoi, Boston Terrier, Boxer, Boykin Spaniel, Briard, Brittany, Brussels Griffon, Bull Terrier, Bulldog, Cairn Terrier, Canaan Dog, Cardigan Welsh Corgi, Cavalier King Charles Spaniel, Chesapeake Bay Retriever, Chihuahua, Chinese Crested, Chow Chow, Clumber Spaniel, Cocker Spaniel, Collie, Coton de Tulear, Dachshund, Dalmatian, Dandie Dinmont Terrier, Doberman Pinscher, Dogo Argentino, English Cocker Spaniel, English Foxhound, English Setter, English Springer Spaniel, English Toy Spaniel, Entlebucher Mountain Dog, Field Spaniel, Finnish Lapphund, Finnish Spitz, French Bulldog, German Pinscher, German Shepherd Dog, German Shorthaired Pointer, German Wirehaired Pointer, Giant Schnauzer, Glen of Imaal Terrier, Golden Retriever, Gordon Setter, Great Dane, Great Pyrenees, Greater Swiss Mountain Dog, Greyhound, Harrier, Havanese, Irish Red and White Setter, Irish Setter, Irish Terrier, Irish Water Spaniel, Irish Wolfhound, Italian Greyhound, Japanese Chin, Keeshond, Kerry Blue Terrier, Komondor, Kuvasz, Labrador Retriever, Lagotto Romagnolo, Lakeland Terrier, Leonberger, Lhasa Rapso, Maltese, Manchester Terrier, Mastiff, Miniature Bull Terrier, Miniature Pinscher, Miniature Schnauzer, Newfoundland, Norfolk Terrier, Norwegian Buhund, Norwegian Elkhound, Norwegian Lundehund, Norwich Terrier, Nova Scotia Duck Tolling Retriever, Old English Sheepdog, Otterhound, Parson Russell Terrier, Pekingese, Pembroke Welsh Corgi, Pharaoh Hound, Pointer, Polish Lowland Sheepdog, Pomeranian, Poodle, Portuguese Water Dog, Pug, Puli, Pumi, Pyrenean Shepherd, Redbone Coonhound, Rhodesian Ridgeback, Rottweiler, Saint Bernard, Saluki, Samoyed, Schipperke, Scottish Deerhound, Scottish Terrier, Sealyham Terrier, Shetland Sheepdog, Shiba Inu, Shih Tzu, Siberian Husky, Silky Terrier, Skye Terrier, Sloughi, Soft Coated Wheaten Terrier, Spanish Water Dog, Standard Schnauzer, Sussex Spaniel, Swedish Vallhund, Tibetan Mastiff, Tibetan Spaniel, Tibetan Terrier, Toy Fox Terrier, Treeing Walker Coonhound, Vizsla, Weimaraner, Welsh Springer Spaniel, Welsh Terrier, West Highland White Terrier, Whippet, Wire Fox Terrier, Wirehaired Pointing Griffon, Wirehaired Vizsla, Xoloitzcuintli, Yorkshire Terrier. "
@@ -19,9 +15,7 @@ raw_policy_data <- read.csv("data/policy-data.csv")
 raw_claims_data <- read.csv("data/claims-data.csv")
 
 
-# ===============================================
-# UTILITY FUNCTIONS (repetitive for all data sets)
-# ===============================================
+# ==== UTILITY FUNCTIONS (repetitive for all data sets) ====
 
 # Prints a header for better readability
 print_header <- function(heading, total_width = 70) {
@@ -99,7 +93,7 @@ check_for_duplicates <- function(df, df.ID, name) {
   )
 }
 
-# Outlier analysis across multiple numeric columns (summary table, boxplots, histograms)
+# Outlier analysis across multiple numeric columns (summary table, box-plots, histograms)
 check_for_outliers <- function(df, cols, name) {
   print_header(glue("{name}: Outlier Analysis"))
 
@@ -156,7 +150,16 @@ check_for_outliers <- function(df, cols, name) {
   print(p_hist)
 }
 
-
+# Profile claim frequency distribution across policies
+analyze_claims_distribution <- function(claims_df, name = "Claims") {
+  print_header(glue("{name}: Distribution of Claims per Policy"))
+  dist_tbl <- claims_df |>
+    count(policy.ID, name = "n_claims") |>
+    count(n_claims, name = "n_policies") |>
+    mutate(pct = round(n_policies / sum(n_policies) * 100, 2))
+  print(as.data.frame(dist_tbl), row.names = FALSE)
+  return(invisible(dist_tbl))
+}
 
 make_observations <- function(dataset_name, ...) {
   print_header(glue("Observations for `{dataset_name}` Dataset"))
@@ -170,9 +173,7 @@ make_observations <- function(dataset_name, ...) {
   }
 }
 
-# ===============================================
-# PETS DATASET
-# ===============================================
+# ==== PETS DATASET ====
 
 show_data_overview(raw_pet_data, "Pets")
 
@@ -214,7 +215,7 @@ check_breeds <- function(breed = "Dog",
       pull()
   )
   
-  print(glue("Cat breeds present in the data, but missing the list:"))
+  print(glue("{breed} breeds present in the data, but missing from appendix list:"))
   extra_breeds <- setdiff(breeds_actual, breeds_expected)
   cat(paste0(seq_along(extra_breeds), ". ", extra_breeds, "\n"), sep = "")
   
@@ -226,21 +227,18 @@ extra_cat_breeds <- check_breeds("Cat", appendix_breed_cats)
 
 make_observations(
   "Pets",
-  "Policy Start and End seem to be in consistent range according to the data dictionary",
-  "Exposure is also consistent (0,1], and are non-zero according to the data dictionary",
-  "`p` in the MCAR test is significantly larger than 5%, thus its safe to affirm that data is missing completely at random, and also a very low percentage of claims are missing. Thus, we can drop those records (after merging the datasets).",
-  "Gender is coded with both `M` and `Male` format, needs cleaning",
-  "Microchip is coded with both `No`, `Nope`, `Y`, `Yes`, needs cleaning",
-  "In pet.Group: `Non-Sporting` has two spellings, needs cleaning",
-  "The {toString(extra_dog_breeds)} are dog breeds which are not present in the appendix.",
-  "There are 369 rows with duplicate pet.ID in Pets, out of which 32 have conflicting values. Observing the 32 conflicting values, most of them are due to NA values.",
+  "pet.Age (1-18), pet.Height (4.9-32.9), and pet.Weight (3.1-137.9) fall into expected biological ranges.",
+  "`p` in the MCAR test is significantly larger than 5%, confirming missing values are missing completely at random.",
+  "Gender is coded with both `M` and `Male`, `F` and `Female`, requiring normalization to factors.",
+  "Microchip is coded with both `No`, `Nope`, `Y`, `Yes`, requiring standardization.",
+  "In pet.Group: `Non-Sporting` has two spellings ('Non-Sporting' and 'Non-sporting'), requiring consolidation.",
+  "The {toString(extra_dog_breeds)} are dog breeds present in the data but missing from the appendix list; retained as valid population.",
+  "There are 369 rows with duplicate pet.ID in Pets, out of which 32 have conflicting values mostly due to NA entries.",
   "In outlier analysis (1.5 * IQR), `pet.Age` and `pet.Height` exhibit 0 outliers, whereas `pet.Weight` exhibits 1,808 outliers (4.85% of total records) with values exceeding the upper cutoff of 106.6 lbs, driven by large/giant dog breeds."
 )
 
 
-# ========
-# CLEANING `PETS` DATASET
-# ========
+# ==== CLEANING `PETS` DATASET ==== 
 
 pets <- raw_pet_data |>
   mutate(
@@ -249,7 +247,6 @@ pets <- raw_pet_data |>
       case_match(pet.Group, "Non-sporting" ~ "Non-Sporting", .default = pet.Group)
     ),
     pet.Breed = as.factor(pet.Breed),
-    # NOTE: 3 extra dog breeds
     pet.Gender = as.factor(
       case_match(pet.Gender, "F" ~ "Female", "M" ~ "Male", .default = pet.Gender)
     ),
@@ -260,20 +257,217 @@ pets <- raw_pet_data |>
     pet.Origin = as.factor(pet.Origin)
   )
 
-# How are we to handle extra dog breeds?
-pets |>
-  filter(pet.Breed %in% extra_dog_breeds) |>
-  count(pet.Breed, sort = TRUE)
-
+# Verify extra dog breeds distribution and missing values
 pets |>
   filter(pet.Breed %in% extra_dog_breeds) |>
   filter(if_any(everything(), is.na))
 
-# These breeds are not outliers, they seem to represent a population of their breeds
-# in the data, and the data vendor probably missed listing them in the appendices, nor
-# do they have significant missing records. Thus, we will retain them.
+# These breeds are not outliers, they represent a valid population of their breeds
+# in the data, and the data vendor likely omitted them in the appendices. We will retain them.
+
+# Dedupe Pets: remove exact duplicates and resolve conflicting records by taking non-null values
+cat(glue("Pet records before dedup: {nrow(pets)}\n\n"))
+
+pets <- pets |>
+  distinct() |>
+  group_by(pet.ID) |>
+  summarize(across(everything(), \(x) {
+    v <- na.omit(x)
+    if (length(v) > 0) v[1] else x[1]
+  }), .groups = "drop")
+
+cat(glue("Pet records after dedup: {nrow(pets)} (unique pets: {n_distinct(pets$pet.ID)})\n\n"))
 
 
-# ===============================================
-# OWNERS DATASET
-# ===============================================
+# ==== OWNERS DATASET ==== 
+
+show_data_overview(raw_owner_data, "Owners")
+
+profile_categorical_variables(
+  raw_owner_data,
+  c("owner.Gender", "owner.Location", "owner.Channel"),
+  "Owners"
+)
+
+check_for_duplicates(raw_owner_data, owner.ID, "Owners")
+
+check_for_outliers(
+  raw_owner_data,
+  c("owner.Age", "owner.CreditScore", "owner.PetCount"),
+  "Owners"
+)
+
+# Validate recorded owner.PetCount against raw pet data
+validate_pet_counts(raw_owner_data, pets, "Owners (Raw)")
+
+make_observations(
+  "Owners",
+  "owner.Age (22-78), owner.CreditScore (300-850), and owner.PetCount (1-4) fall into valid ranges.",
+  "`p` in the MCAR test is well above 5%, confirming missing values are Missing Completely at Random.",
+  "Categorical variables (Gender, Location, Channel) are clean with no miscoding or invalid levels.",
+  "There are 219 duplicate owner.ID records in the raw data, with 4 unique owners exhibiting conflicting records.",
+  "Discrepancy between recorded owner.PetCount and calculated pet counts is due to duplicate records; But we will keep ."
+)
+
+# ==== CLEANING `OWNERS` DATASET ==== 
+
+# Dedupe Owners: take max pet.Count and non-NA values for other columns
+owners <- raw_owner_data |>
+  group_by(owner.ID) |>
+  summarize(
+    owner.PetCount = max(owner.PetCount, na.rm = TRUE),
+    across(-owner.PetCount, ~ na.omit(.x)[1]),
+    .groups = "drop"
+  ) |>
+  mutate(
+    owner.Gender = as.factor(owner.Gender),
+    owner.Location = as.factor(owner.Location),
+    owner.Channel = as.factor(owner.Channel)
+  )
+
+stopifnot(n_distinct(owners$owner.ID) == nrow(owners))
+cat(glue("Owner records after dedup: {nrow(owners)} (unique owners: {n_distinct(owners$owner.ID)})\n\n"))
+
+# Re-validate pet count against cleaned pets
+validate_pet_counts(owners, pets, "Owners (Cleaned)")
+
+
+# ==== POLICY DATASET ==== 
+
+show_data_overview(raw_policy_data, "Policy")
+
+profile_categorical_variables(
+  raw_policy_data,
+  c("policy.NBRB"),
+  "Policy"
+)
+
+check_for_duplicates(raw_policy_data, policy.ID, "Policy")
+
+check_for_outliers(
+  raw_policy_data,
+  c("policy.Exposure"),
+  "Policy"
+)
+
+make_observations(
+  "Policy",
+  "policy.Start and policy.End are character strings and require formatting to Date objects.",
+  "Exposure is in (0, 1] range; records with zero exposure do not contribute to risk and must be excluded.",
+  "`p` in the MCAR test is significantly above 5%, confirming missing values are Missing Completely at Random.",
+  "policy.NBRB has miscoded categories ('NewBus' -> 'NB', 'RenBus' -> 'RB') requiring standardization.",
+  "There are 0 duplicate policy.ID records found in the policy dataset."
+)
+
+# ==== CLEANING `POLICY` DATASET ==== 
+
+policy <- raw_policy_data |>
+  filter(policy.Exposure > 0) |>
+  mutate(
+    policy.Start = as.Date(policy.Start),
+    policy.End = as.Date(policy.End),
+    policy.NBRB = as.factor(case_match(
+      policy.NBRB,
+      "NewBus" ~ "NB",
+      "RenBus" ~ "RB",
+      .default = policy.NBRB
+    ))
+  )
+
+cat(glue("Policy records after filtering zero exposure: {nrow(policy)} (unique policies: {n_distinct(policy$policy.ID)})\n\n"))
+
+
+# ==== CLAIMS DATASET ==== 
+
+show_data_overview(raw_claims_data, "Claims")
+
+profile_categorical_variables(
+  raw_claims_data,
+  c("claim.Coverage"),
+  "Claims"
+)
+
+check_for_duplicates(raw_claims_data, claim.ID, "Claims")
+
+check_for_outliers(
+  raw_claims_data,
+  c("claim.Cost"),
+  "Claims"
+)
+
+analyze_claims_distribution(raw_claims_data, "Claims")
+
+make_observations(
+  "Claims",
+  "Zero missing values exist across all columns in the claims dataset.",
+  "claim.Coverage contains two clean, consistent categories: 'Illness' and 'Accident'.",
+  "84.8% of policies with claims have 1 claim, 12.8% have 2 claims, and remaining few have 3-5 claims.",
+  "claim.Cost exhibits a right-skewed distribution with severe high-cost outliers typical of insurance loss data.",
+  "There are zero duplicate claim.ID records."
+)
+
+# ==== CLEANING `CLAIMS` DATASET ==== 
+
+claims <- raw_claims_data |>
+  mutate(
+    claim.Coverage = as.factor(claim.Coverage)
+  )
+
+
+# ==== MERGING DATASETS ==== 
+
+print_header("Merging Datasets: Policy + Pets + Owners + Claims")
+
+# 1. Aggregate claims by policy
+# Retain granular Illness and Accident losses while calculating TotalLoss and total claim count
+claims_agg <- claims |>
+  group_by(policy.ID) |>
+  summarize(
+    n_claims = n(),
+    illness_loss = sum(claim.Cost[claim.Coverage == "Illness"]),
+    accident_loss = sum(claim.Cost[claim.Coverage == "Accident"]),
+    total_losses = sum(claim.Cost),
+    .groups = "drop"
+  )
+
+cat(glue("Aggregated claims: {nrow(claims_agg)} unique policies with claims.\n\n"))
+
+# 2. Join Policy to Pets on pet.ID
+merged_df <- policy |>
+  left_join(pets, by = "pet.ID")
+
+unmatched_pets <- sum(is.na(merged_df$pet.Type))
+cat(glue("Unmatched pets after joining Policy and Pets: {unmatched_pets}\n"))
+
+# 3. Join with Owners on owner.ID
+merged_df <- merged_df |>
+  left_join(owners, by = "owner.ID")
+
+unmatched_owners <- sum(is.na(merged_df$owner.Location))
+cat(glue("Unmatched owners after joining with Owners: {unmatched_owners}\n"))
+
+# 4. Join with Claims Aggregation on policy.ID
+# Impute non-claiming policies with 0 claims and 0 losses
+merged_df <- merged_df |>
+  left_join(claims_agg, by = "policy.ID") |>
+  mutate(
+    n_claims = replace_na(n_claims, 0),
+    illness_loss = replace_na(illness_loss, 0),
+    accident_loss = replace_na(accident_loss, 0),
+    total_losses = replace_na(total_losses, 0)
+  )
+
+cat(glue("\nMerge completed successfully!\n"))
+cat(glue("Final merged dimensions: {nrow(merged_df)} rows x {ncol(merged_df)} columns.\n\n"))
+
+# --- Post-Merge Validation & Overview ---
+show_data_overview(merged_df, "Merged Dataset")
+
+make_observations(
+  "Merged Dataset",
+  "Policy dataset (exposure > 0) serves as the base population with {nrow(policy)} records.",
+  "100% of policies successfully matched to a pet in `pets` (0 unmatched pet.IDs).",
+  "100% of pet records successfully matched to an owner in `owners` (0 unmatched owner.IDs).",
+  "Claims aggregated at policy level merged cleanly; non-claiming policies imputed with 0 claims and 0 losses.",
+  "Final modeling dataset contains {nrow(merged_df)} records across {ncol(merged_df)} features ready for pure premium modeling."
+)

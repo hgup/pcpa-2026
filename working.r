@@ -499,9 +499,9 @@ print(glue("Missing pet IDs: {sum(is.na(pets$pet.ID))}"))
 claims_agg <- claims |>
   group_by(policy.ID) |>
   summarize(
-    claims_agg.N = n(),
-    claims_agg.IllnessLoss = sum(claim.Cost[claim.Coverage == "Illness"]),
-    claims_agg.AccidentLoss = sum(claim.Cost[claim.Coverage == "Accident"]),
+    n_claims = n(),
+    illness_loss = sum(claim.Cost[claim.Coverage == "Illness"]),
+    accident_loss = sum(claim.Cost[claim.Coverage == "Accident"]),
     .groups = "drop"
   )
 # Though we are mentioned to not differentiate between Illness and Accident, we will retain

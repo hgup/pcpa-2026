@@ -1,0 +1,181 @@
+---
+title: "Pet Insurance Cleaining Combined data"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: false
+    theme: readable
+    highlight: tango
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+options(width=120)
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  fig.align = "center"
+)
+```
+
+```{r libraries}
+if (!requireNamespace("pacman", quietly = TRUE)) {
+  install.packages("pacman")
+}
+pacman::p_load(
+  tidyverse,  # covers dplyr, ggplot2, lubridate, tidyr, stringr, purrr, forcats
+  janitor,    # data hygiene (clean_names, tabyl)
+  skimr,      # broad EDA summary
+  naniar,     # missingness patterns
+  glue,       # string interpolation
+  caret
+)
+
+merged_df <- read.csv('data/merged.csv')
+```
+
+# 0. Cleaning the merged dataset
+
+```{r missing-data}
+miss_summary <- naniar::miss_var_summary(merged_df) |>
+  mutate(pct_miss = paste0(round(as.numeric(pct_miss), 3), "%"))
+print(as.data.frame(miss_summary), row.names = FALSE)
+
+```
+
+Since imputation is outside our scope, we can drop rows before the train test split.
+
+```{r}
+# 3. Drop rows containing missing values
+clean_df <- merged_df |> drop_na()
+
+# 4. Impact Assessment: Compare key portfolio metrics Before vs. After
+b_rows <- nrow(merged_df)
+a_rows <- nrow(clean_df)
+
+b_exp  <- sum(merged_df$policy.Exposure)
+a_exp  <- sum(clean_df$policy.Exposure)
+
+b_clm  <- sum(merged_df$n_claims)
+a_clm  <- sum(clean_df$n_claims)
+
+b_freq <- b_clm / b_exp
+a_freq <- a_clm / a_exp
+
+b_loss <- sum(merged_df$total_losses)
+a_loss <- sum(clean_df$total_losses)
+
+b_pp   <- b_loss / b_exp
+a_pp   <- a_loss / a_exp
+
+b_sev  <- b_loss / b_clm
+a_sev  <- a_loss / a_clm
+
+impact_summary <- tibble(
+  Metric = c(
+    "Policy Count (Rows)",
+    "Earned Exposure (Years)",
+    "Claim Count (N)",
+    "Total Incurred Loss ($)"
+  ),
+  Before = c(
+    format(b_rows, big.mark = ","),
+    format(round(b_exp, 1), big.mark = ","),
+    format(b_clm, big.mark = ","),
+    paste0("$", format(round(b_loss), big.mark = ","))
+  ),
+  After = c(
+    format(a_rows, big.mark = ","),
+    format(round(a_exp, 1), big.mark = ","),
+    format(a_clm, big.mark = ","),
+    paste0("$", format(round(a_loss), big.mark = ","))
+  ),
+  Change = c(
+    format(a_rows - b_rows, big.mark = ","),
+    format(round(a_exp - b_exp, 1), big.mark = ","),
+    format(a_clm - b_clm, big.mark = ","),
+    paste0("-$", format(round(b_loss - a_loss), big.mark = ","))
+  ),
+  Pct_Retained = c(
+    paste0(round(a_rows / b_rows * 100, 2), "%"),
+    paste0(round(a_exp / b_exp * 100, 2), "%"),
+    paste0(round(a_clm / b_clm * 100, 2), "%"),
+    paste0(round(a_loss / b_loss * 100, 2), "%")
+  )
+)
+remove(a_clm, a_exp, a_freq, a_loss, a_pp, a_rows, a_sev,
+       b_clm, b_exp, b_freq, b_loss, b_pp, b_rows, b_sev)
+impact_summary
+
+cat(
+"There is negligible Data loss, eliminating only 2.92% of the portfolio."
+)
+
+```
+
+Confirm there are no missing values
+
+```{r}
+miss_summary <- naniar::miss_var_summary(clean_df) |>
+  mutate(pct_miss = paste0(round(as.numeric(pct_miss), 3), "%"))
+print(as.data.frame(miss_summary), row.names = FALSE)
+
+df <- clean_df
+```
+
+# 1. Perform the Train/Test Split
+
+```{r}
+set.seed(42)
+train_index <- createDataPartition(df$total_losses, p = 0.70, list=FALSE)
+```
+
+```{r}
+train <- df[train_index,]
+test <- df[-train_index,]
+```
+
+```{r}
+dim(train)
+dim(test)
+```
+
+Validate the split, to verify that both train and test data sets have similar distributions across key variables so that neither set is significantly different from each other.
+
+```{r}
+bind_rows(
+  train |> summarize(set="train", mean_losses=mean(total_losses), pct_zero=round(mean(total_losses)*100, 2)),
+  test |> summarize(set="test", mean_losses=mean(total_losses), pct_zero=round(mean(total_losses)*100, 2)),
+)
+```
+
+```{r}
+bind_rows(
+  train |> summarize(set="train", mean_exposure=mean(policy.Exposure), pct_zero=round(mean(policy.Exposure)*100, 2)),
+  test |> summarize(set="test", mean_exposure=mean(policy.Exposure), pct_zero=round(mean(policy.Exposure)*100, 2)),
+)
+```
+
+```{r}
+validate_split <- function(column) {
+  bind_rows(
+    train |> count({{column}}) |> mutate(set="train", pct= round(n / sum(n) * 100, 2)),
+    test |> count({{column}}) |> mutate(set="test", pct= round(n / sum(n) * 100, 2)),
+  ) |> relocate(set, .after=1) |> arrange({{column}}, set)
+}
+validate_split(pet.Type)
+validate_split(pet.Group)
+validate_split(pet.Gender)
+validate_split(owner.Location)
+```
+
+```{r}
+write.csv(test, 'data/test.csv', row.names = FALSE)
+write.csv(train, 'data/train.csv', row.names = FALSE)
+```

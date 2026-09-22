@@ -1,0 +1,373 @@
+---
+title: "CAS PCPA Practice Project"
+subtitle: "Feature Generation"
+---
+
+
+## Overview
+
+In this video we perform feature generation. We test raw vs binned forms,
+polynomial terms, and interaction effects identified during EDA. Each
+test compares AIC via AICtweedie and we retain whichever form produces
+the lower AIC. 
+
+---
+
+1. Load Libraries
+
+Load tidyverse, statmod, and tweedie for modeling
+```{r}
+# install.packages("tidyverse")
+# install.packages("statmod")
+# install.packages("tweedie")
+library(tidyverse)
+library(statmod)
+library(tweedie)
+```
+
+---
+
+2. Load the Data and Selected Model
+
+Read the training set, Tweedie p, and the selected model into R
+```{r}
+train         <- read_csv("train_modela.csv")
+p             <- readRDS("tweedie_p.rds")
+model_selected <- readRDS("model_C.rds")
+
+cat("Using Tweedie p:", round(p, 4), "\n")
+cat("Selected Model AIC:", round(AICtweedie(model_C), 2), "\n")
+```
+
+---
+
+3. Review the Selected Model Formula
+
+Print the formula of the selected model - Model C
+```{r}
+formula(model_C)
+```
+
+---
+
+4. Re-apply Factor Levels
+
+Re-apply factor levels and reference levels since they are not
+preserved when saving to CSV
+```{r}
+train <- train %>%
+  mutate(
+    gender            = factor(gender),
+    marital_status    = factor(marital_status),
+    coverage_type     = factor(coverage_type),
+    deductible        = factor(deductible),
+    make              = factor(make),
+    body_type         = factor(body_type),
+    vehicle_use       = factor(vehicle_use),
+    num_cylinders     = factor(num_cylinders),
+    anti_theft_device = factor(anti_theft_device),
+    safety_rating     = factor(safety_rating),
+    region            = factor(region),
+    urban_rural       = factor(urban_rural),
+    tort_environment  = factor(tort_environment),
+    catastrophe_risk  = factor(catastrophe_risk)
+  ) %>%
+  mutate(
+    gender            = relevel(gender, ref = "F"),
+    marital_status    = relevel(marital_status, ref = "Married"),
+    coverage_type     = relevel(coverage_type, ref = "Liability Only"),
+    deductible        = relevel(deductible, ref = "500"),
+    make              = relevel(make, ref = "Toyota"),
+    body_type         = relevel(body_type, ref = "Sedan"),
+    vehicle_use       = relevel(vehicle_use, ref = "Pleasure"),
+    safety_rating     = relevel(safety_rating, ref = "3"),
+    urban_rural       = relevel(urban_rural, ref = "Suburban"),
+    tort_environment  = relevel(tort_environment, ref = "Moderate"),
+    catastrophe_risk  = relevel(catastrophe_risk, ref = "Medium")
+  )
+```
+
+Add binned versions of continuous variables for testing
+```{r}
+miles_breaks  <- c(0, 5000, 10000, 15000, 20000, 30000, Inf)
+miles_labels  <- c("0-5k", "5k-10k", "10k-15k", "15k-20k", "20k-30k", "30k+")
+value_breaks  <- c(0, 10000, 20000, 35000, 50000, Inf)
+value_labels  <- c("0-10k", "10k-20k", "20k-35k", "35k-50k", "50k+")
+
+train <- train %>%
+  mutate(
+    miles_band = factor(cut(annual_miles, breaks = miles_breaks, labels = miles_labels, include.lowest = TRUE),
+                        levels = miles_labels),
+    value_band = factor(cut(vehicle_value, breaks = value_breaks, labels = value_labels, include.lowest = TRUE),
+                        levels = value_labels)
+  ) %>%
+  mutate(
+    miles_band = relevel(miles_band, ref = "10k-15k"),
+    value_band = relevel(value_band, ref = "10k-20k")
+  )
+```
+
+---
+
+5. Helper Function
+
+Create a reusable function to compare two model formulas by AIC
+```{r}
+compare_aic <- function(formula_1, formula_2, label_1, label_2, data, p) {
+  m1 <- glm(as.formula(paste(formula_1, collapse = " ")), 
+            data = data, family = tweedie(var.power = p, link.power = 0))
+  m2 <- glm(as.formula(paste(formula_2, collapse = " ")), 
+            data = data, family = tweedie(var.power = p, link.power = 0))
+  data.frame(
+    model     = c(label_1, label_2),
+    AIC       = round(c(AICtweedie(m1), AICtweedie(m2)), 2),
+    preferred = c(ifelse(AICtweedie(m1) < AICtweedie(m2), "YES", ""),
+                  ifelse(AICtweedie(m2) < AICtweedie(m1), "YES", ""))
+  )
+}
+```
+
+---
+
+6. Define the Base Formula
+
+Define the selected model formula as a string to use as the base for
+all tests.
+```{r}
+base_formula <- "total_losses ~ credit_score + gender + prior_claims_3yr + violations_3yr + 
+    coverage_type + annual_miles + vehicle_value + vehicle_age + 
+    urban_rural + tort_environment + catastrophe_risk + offset(log(exposure))"
+```
+
+---
+
+7. Step 1 - Raw vs Binned Variable Forms
+
+Test each continuous predictor that survived variable selection against
+its binned version. We retain whichever form produces lower AIC.
+
+7.1 Annual Miles vs Miles Band
+
+```{r}
+train %>%
+  mutate(miles_band_viz = cut(annual_miles,
+                              breaks = c(0, 5000, 10000, 15000, 20000, 30000, Inf),
+                              labels = c("0-5k","5k-10k","10k-15k","15k-20k","20k-30k","30k+"),
+                              include.lowest = TRUE)) %>%
+  group_by(miles_band_viz) %>%
+  summarize(mean_pp = mean(pure_premium)) %>%
+  ggplot(aes(x = miles_band_viz, y = mean_pp)) +
+  geom_col(fill = "steelblue") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Mean Pure Premium by Annual Miles",
+       x = "Annual Miles Band", y = "Mean Pure Premium ($)") +
+  theme_minimal()
+```
+
+Test raw annual_miles against miles_band
+```{r}
+compare_aic(
+  base_formula,
+  gsub("annual_miles", "miles_band", base_formula),
+  "Raw: annual_miles",
+  "Binned: miles_band",
+  train, p
+)
+```
+
+7.3 Vehicle Value vs Value Band
+
+```{r}
+train %>%
+  mutate(value_band_viz = cut(vehicle_value,
+                              breaks = c(0, 10000, 20000, 35000, 50000, Inf),
+                              labels = c("0-10k","10k-20k","20k-35k","35k-50k","50k+"),
+                              include.lowest = TRUE)) %>%
+  group_by(value_band_viz) %>%
+  summarize(mean_pp = mean(pure_premium)) %>%
+  ggplot(aes(x = value_band_viz, y = mean_pp)) +
+  geom_col(fill = "steelblue") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Mean Pure Premium by Vehicle Value",
+       x = "Vehicle Value Band", y = "Mean Pure Premium ($)") +
+  theme_minimal()
+```
+
+Test raw vehicle_value against value_band
+```{r}
+compare_aic(
+  base_formula,
+  gsub("vehicle_value", "value_band", base_formula),
+  "Raw: vehicle_value",
+  "Binned: value_band",
+  train, p
+)
+```
+
+7.4 Update Base Formula with Best Forms
+
+Update the formula to use the preferred form for each variable based
+on the AIC comparisons above
+```{r}
+best_formula <- "total_losses ~ credit_score + gender + prior_claims_3yr + violations_3yr + coverage_type + annual_miles + value_band + vehicle_age + urban_rural + tort_environment + catastrophe_risk + offset(log(exposure))"
+best_formula
+```
+
+---
+
+8. Step 2 - Polynomial Terms
+
+Test whether adding a quadratic term for age improves model fit. EDA
+showed a U-shaped relationship between age and pure premium, and age
+was not significant as a linear term during variable selection. This
+is a strong candidate for a quadratic term.
+
+8.1 Age Squared
+
+Test linear age vs age plus age squared
+```{r}
+formula_age_sq <- paste0(best_formula, " + age + I(age^2)")
+
+compare_aic(
+  best_formula,
+  formula_age_sq,
+  "Without age",
+  "With age + I(age^2)",
+  train, p
+)
+```
+
+Update best formula if quadratic age is preferred
+```{r}
+best_formula <- formula_age_sq
+best_formula
+```
+
+---
+
+9. Step 3 - Interaction Terms
+
+Test interaction terms identified during bivariate analysis in Video 12.
+
+9.1 Age x Gender Interaction
+
+EDA showed young male drivers have materially higher pure premiums
+than young female drivers. Test whether adding this interaction improves fit.
+
+```{r}
+train %>%
+  filter(gender %in% c("M", "F")) %>%
+  mutate(age_band_viz = cut(age,
+                            breaks = c(15, 25, 35, 50, 65, 100),
+                            labels = c("16-25","26-35","36-50","51-65","66+"),
+                            include.lowest = TRUE)) %>%
+  group_by(age_band_viz, gender) %>%
+  summarize(mean_pp = mean(pure_premium), .groups = "drop") %>%
+  ggplot(aes(x = age_band_viz, y = mean_pp, color = gender, group = gender)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Mean Pure Premium by Age Band and Gender",
+       subtitle = "Young males have materially higher pure premiums",
+       x = "Age Band", y = "Mean Pure Premium ($)", color = "Gender") +
+  theme_minimal()
+```
+
+
+```{r}
+formula_age_gender <- paste0(best_formula, " + age:gender")
+
+compare_aic(
+  best_formula,
+  formula_age_gender,
+  "Without age:gender",
+  "With age:gender",
+  train, p
+)
+```
+
+9.2 Vehicle Use x Annual Miles Interaction
+
+EDA showed business drivers with high mileage have the highest pure
+premiums. Test whether this interaction improves fit.
+
+```{r}
+train %>%
+  mutate(miles_band_viz = cut(annual_miles,
+                              breaks = c(0, 10000, 15000, 20000, Inf),
+                              labels = c("Low (<10k)","Medium (10-15k)",
+                                         "High (15-20k)","Very High (20k+)"),
+                              include.lowest = TRUE)) %>%
+  group_by(vehicle_use, miles_band_viz) %>%
+  summarize(mean_pp = mean(pure_premium), .groups = "drop") %>%
+  ggplot(aes(x = miles_band_viz, y = mean_pp, color = vehicle_use, group = vehicle_use)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Mean Pure Premium by Annual Miles and Vehicle Use",
+       subtitle = "Business drivers show steeper increase with miles",
+       x = "Annual Miles Band", y = "Mean Pure Premium ($)", color = "Vehicle Use") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))
+```
+
+
+```{r}
+formula_use_miles <- paste0(best_formula, " + vehicle_use:annual_miles")
+
+compare_aic(
+  best_formula,
+  formula_use_miles,
+  "Without vehicle_use:annual_miles",
+  "With vehicle_use:annual_miles",
+  train, p
+)
+```
+
+---
+
+10. Fit the Refined Model
+
+Fit the final refined model using the best formula after all tests
+```{r}
+model_D <- glm(
+  as.formula(best_formula),
+  data   = train,
+  family = tweedie(var.power = p, link.power = 0)
+)
+```
+
+Review the refined model summary
+```{r}
+summary(model_D)
+```
+
+Compare AIC across all models
+```{r}
+cat("Model_C: ", round(AICtweedie(model_C), 2), "\n")
+cat("Model_D:             ", round(AICtweedie(model_D), 2), "\n")
+cat("% Deviance Explained:          ", round((1 - model_D$deviance / model_D$null.deviance) * 100, 2), "%\n")
+```
+
+---
+
+11. Save the Refined Model
+
+Save the refined model for use in subsequent scripts
+```{r}
+saveRDS(model_D, "model_D.rds") 
+write_csv(train, "train_modeld.csv")
+cat("Refined model saved to model_D.rds\n")
+```
+
+---
+
+## Key Observations
+
+- Feature engineering was performed only on variables that survived variable selection
+- a more efficient and practical approach than engineering features for variables that may be dropped
+- Raw vs binned forms were tested for continuous predictors using AICtweedie as the selection criterion
+- A quadratic term for age was tested since age was not significant as a linear term but EDA showed a clear U-shaped relationship - this is an important teaching moment about why a variable might appear non-significant in its raw form
+- Two interaction terms were tested based on EDA findings - age x gender and vehicle_use x annual_miles
+- Each feature was tested individually to isolate its contribution before updating the base formula
+- The refined model is carried forward into Video 18 where we perform iterative model refinement and diagnostics

@@ -1,0 +1,536 @@
+---
+title: "Pet Insurance Model building"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: false
+    theme: readable
+    highlight: tango
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+options(width=120)
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  fig.align = "center"
+)
+```
+
+
+```{r libraries}
+if (!requireNamespace("pacman", quietly = TRUE)) {
+  install.packages("pacman")
+}
+pacman::p_load(
+  tidyverse,  # covers dplyr, ggplot2, lubridate, tidyr, stringr, purrr, forcats
+  statmod, tweedie, car,
+  glue, broom, janitor
+)
+train <- read.csv("data/train_outlier.csv")
+```
+
+
+```{r}
+train |> 
+  summarize(
+    n_total = n(),
+    n_zero = sum(total_losses = 0),
+    pct_zero = glue("{round(mean(total_losses == 0) * 100, 2)}%"),
+    mean_losses = round(mean(total_losses), 2),
+    var_losses = round(var(total_losses), 2)
+  )
+```
+
+Estimate `p` using profile likelihood
+
+```{r}
+p_profile <- tweedie.profile(
+  total_losses ~ 1,
+  p.vec = seq(1.1, 1.9, by = 0.1),
+  data = train,
+  do.plot = TRUE,
+  method = "series"
+)
+```
+```{r}
+p_optimal <- p_profile$p.max
+glue("Optimal Tweedie p: {p_optimal}")
+```
+```{r}
+p_refined <- tweedie.profile(
+  total_losses ~ 1,
+  p.vec = seq(p_optimal - 0.1, p_optimal + 0.1, by = 0.01),
+  data = train,
+  do.plot = TRUE,
+  method = "series"
+)
+```
+```{r}
+p_final = p_refined$p.max
+saveRDS(p_final, "tweedie_p.rds")
+glue("Tweedie p = {p_final} saved to tweedie_p.rds")
+```
+# Convert all categorical variables to factors
+
+```{r}
+p_final <- readRDS("tweedie_p.rds")
+```
+
+
+```{r}
+cat_cols <- c("policy.NBRB","pet.Type",
+              "pet.Group","pet.Breed","pet.Gender","pet.Offspring","pet.Microchip","pet.Origin",
+              "owner.Gender","owner.Location","owner.Channel"
+              )
+train <- train |> 
+  mutate(across(all_of(cat_cols), factor))
+  mutate(
+    pet.Type = relevel(pet.Type, ref = "Dog"),
+    pet.Group = relevel(pet.Group, ref = "Shorthair"),
+    pet.Gender = relevel(pet.Gender, ref = "Male"),
+    pet.Offspring = relevel(pet.Offspring, ref = "No"),
+    pet.Microchip = relevel(pet.Microchip, ref = "Yes"),
+    pet.Origin = relevel(pet.Origin, ref = "Store"),
+    pet.Origin = relevel(pet.Origin, ref = "Store"),
+    owner.Gender = relevel(owner.Gender, ref = "Male"),
+    owner.Location = relevel(owner.Location, ref = "Suburban"),
+    policy.NBRB = relevel(policy.NBRB, ref = "RB")
+  )
+```
+
+We omit pet.Breed from the baseline model because it has a very high dimensionality which would
+lead to overfitting and will surely (in its raw form) not be part of the final model.
+
+We also omit pet.Type for exact multicollinearity with pet.Group. Since each level of pet.Group
+is strictly nested within either Cat or Dog, including both will cause an exact rank-deficiency singularity.
+
+```{r}
+model_A <- glm(
+  total_losses ~ pet.Group + pet.Age + pet.Gender + pet.Height +
+    pet.Weight + pet.Offspring + pet.Microchip + pet.Origin + owner.Age + owner.Gender +
+    owner.Location + owner.CreditScore + owner.Channel + owner.PetCount + policy.NBRB +
+    offset(log(policy.Exposure)),
+  data = train,
+  family = tweedie(var.power = p_final, link.power = 0))
+```
+
+# Baseline model summary
+
+```{r}
+summary(model_A)
+```
+
+```{r}
+tidy(model_A) |> 
+  mutate(
+    coefficient = round(estimate ,4),
+    relativity = round(exp(estimate),4),
+    pct_change = ifelse(term=="(Intercept)", NA, round((relativity - 1)*100,2))
+  ) |> 
+  arrange(p.value) |> 
+  select(term, coefficient, relativity, pct_change, p.value)
+```
+
+
+Core rating drivers:
+
+- `pet.Age` (t = 60.0, p -> 0): The single largest risk driver. Expected losses increase by approx 23.6% (exp(0.212) - 1) per additional year of age.
+- `policy.NBRB` (t = 10.8, p -> 0): New Business (NB) exhibits approx 39.6% higher losses than Renewal Business (RB). Underwriting selection.
+- `pet.Gender` (t = -7.3, p < 0.0001): Females have approx 20.2% lower losses than males.
+- `owner.PetCount` (t = 7.3, p < 0.0001): Pure premium increases approx 10.2% per additional pet owned.
+- `pet.Height` & `pet.Weight` (p ≤ 0.001): Both are significant positive cost drivers capturing physical size and build.
+- `pet.Group` (p < 0.05): Dog groups (Working, Sporting, Herding, Hound, Non-Sporting, Terrier) show substantial positive relativities relative to the
+  Shorthair cat baseline.
+  
+Borderline Variables:
+
+- `pet.Offspring` (p = 0.18)
+
+```{r}
+glue("
+     Null Deviance\t\t: {round(model_A$null.deviance,2)}
+     Residual Deviance\t: {round(model_A$deviance,2)} 
+     AIC \t\t\t: {round(tweedie_AIC(model_A),2)} 
+     Degrees of Freedom\t: {model_A$df.residual} 
+     % Deviance explained\t: {round((1- model_A$deviance / model_A$null.deviance)*100, 2)}%
+     ")
+```
+
+```{r}
+alias(model_A)
+```
+
+```{r}
+vif_results <- vif(model_A)
+round(vif_results, 3)
+```
+```{r}
+saveRDS(model_A, "model_A.rds")
+write_csv(train, "data/train_modela.csv")
+```
+
+```{r}
+p_final <- readRDS("tweedie_p.rds")
+model_A <- readRDS("model_A.rds")
+train<- read_csv("data/train_modela.csv")
+```
+
+# Variable Selection
+
+We use `drop1` with the Chi-square test to iteratively remove non-significant variables, then check VIF on the resulting model to identify any remaining multicollinearity concerns.
+
+## Initial drop1
+
+Run `drop1` on the baseline model to assess the contribution of each variable. We remove the least significant variable first and repeat.
+
+```{r}
+(d <- drop1(model_A, test = "Chisq"))
+tidy(d) |>  select(term, p.value) |> arrange(desc(p.value))
+```
+
+## Iterative Variable Removal
+
+Remove the least significant variable identified by `drop1` and refit until all remaining variables have p-values below 0.05.
+
+```{r}
+# Implement Backward selection
+backward_selection <- function(base_model = model_A, threshold = 0.05){
+  print(glue("{strrep('=',100)}"))
+  print(glue("Backward selection: Remove least significant variables until remaining have p-values < {threshold}"))
+  print(glue("{strrep('=',100)}"))
+  
+  model_current <- base_model
+  
+  # Iteration zero
+  n_round <- 0 
+  print(d <- drop1(model_current, test = "Chisq"))
+  print(td <- tidy(d) |>  select(term, p.value) |> arrange(desc(p.value)) |> mutate(p.value = round(p.value,3)) |> head())
+  lowest_p <- td[[1,2]]
+  
+  while(lowest_p > threshold){
+    print(glue("{strrep('=',50)}"))
+    print(glue("Round {n_round <- n_round+1 } - remove {td[[1,1]]} (p = {lowest_p})"))
+    print(glue("{strrep('=',50)}"))
+    model_current <- update(model_current, as.formula(glue(". ~ . - {td[[1,1]]}")))
+    print(d <- drop1(model_current, test = "Chisq"))
+    print(td <- tidy(d) |>  select(term, p.value) |> arrange(desc(p.value)) |> mutate(p.value = round(p.value,3)) |> head())
+    lowest_p <- td[[1,2]]
+  }
+  
+  return(model_current)
+}
+
+```
+
+```{r}
+model_B <- backward_selection()
+```
+
+
+
+## Review Model After Variable Selection
+
+Print the summary of the model after variable selection.
+
+```{r}
+summary(model_B)
+```
+
+```{r}
+tidy(model_B) |> 
+  mutate(
+    coefficient = round(estimate, 4),
+    relativity  = round(exp(estimate), 4),
+    pct_change  = ifelse(term == "(Intercept)", NA, round((relativity - 1) * 100, 2))
+  ) |> 
+  arrange(p.value) |> 
+  select(term, coefficient, relativity, pct_change, p.value)
+```
+
+Review fit statistics comparing baseline to selected model.
+
+```{r}
+aic_A <- round(tweedie_AIC(model_A), 2)
+aic_B <- round(tweedie_AIC(model_B), 2)
+
+cat("Baseline AIC (Model A) :", aic_A, "\n")
+cat("Model B AIC            :", aic_B, "\n")
+cat("Delta AIC (B - A)      :", round(aic_B - aic_A, 2), "\n")
+cat("% Deviance Explained   :", round((1 - model_B$deviance / model_B$null.deviance) * 100, 2), "%\n")
+```
+
+## Check VIF on Selected Model
+
+Check VIF on the model after variable selection to identify any remaining multicollinearity concerns.
+
+```{r}
+vif_results <- vif(model_B)
+round(vif_results, 3)
+```
+
+## Save the Selected Model
+
+```{r}
+saveRDS(model_B, "model_B.rds")
+cat("Selected model saved to model_B.rds\n")
+```
+
+# Feature Generation & Candidate Models
+
+In this section, we test feature transformations and interactions identified during EDA (`3.eda.Rmd`) against `model_B` to find candidate models that improve pure premium estimation. We test raw vs binned forms, polynomial terms, and interaction effects, using AIC as the primary evaluation criterion.
+
+## Helper Function for Model Comparison
+
+We define a reusable function to compare two model formulas by AIC using `tweedie_AIC()`.
+
+```{r}
+compare_aic <- function(formula_1, formula_2, label_1, label_2, data, p) {
+  m1 <- glm(as.formula(paste(formula_1, collapse = " ")), 
+            data = data, family = statmod::tweedie(var.power = p, link.power = 0))
+  m2 <- glm(as.formula(paste(formula_2, collapse = " ")), 
+            data = data, family = statmod::tweedie(var.power = p, link.power = 0))
+  aic1 <- tweedie_AIC(m1)
+  aic2 <- tweedie_AIC(m2)
+  data.frame(
+    model     = c(label_1, label_2),
+    AIC       = round(c(aic1, aic2), 2),
+    preferred = c(ifelse(aic1 < aic2, "YES", ""),
+                  ifelse(aic2 < aic1, "YES", ""))
+  )
+}
+```
+
+## Define the Base Formula
+
+We define the formula from `model_B` as the baseline string for all subsequent feature tests.
+
+```{r}
+base_formula <- "total_losses ~ pet.Group + pet.Age + pet.Gender + pet.Height + pet.Weight + owner.PetCount + policy.NBRB + offset(log(policy.Exposure))"
+base_formula
+```
+
+## Step 1: Raw vs Binned Predictors
+
+In EDA, `owner.PetCount` was binned into an ordinal factor (`1`, `2`, `3`, `4`, `5+`) due to thin exposure at high pet counts. We compare the raw linear term against the binned factor.
+
+```{r}
+train <- train |>
+  mutate(
+    pet_count_band = factor(
+      ifelse(owner.PetCount >= 5, "5+", as.character(owner.PetCount)),
+      levels = c("1", "2", "3", "4", "5+")
+    )
+  )
+
+compare_aic(
+  base_formula,
+  gsub("owner.PetCount", "pet_count_band", base_formula),
+  "Raw: owner.PetCount (Linear)",
+  "Binned: pet_count_band (1, 2, 3, 4, 5+)",
+  train, p_final
+)
+```
+
+Linear `owner.PetCount` yields a lower AIC (163,331.6 vs 163,337.9) and consumes fewer degrees of freedom. We retain the raw linear form.
+
+
+## Step 2: Polynomial Terms (Non-Linear Effects)
+
+EDA revealed that pure premium escalates non-linearly with `pet.Age`, especially in senior years (ages 13+). We test adding a quadratic term `I(pet.Age^2)`.
+
+```{r}
+formula_age_sq <- paste0(base_formula, " + I(pet.Age^2)")
+
+compare_aic(
+  base_formula,
+  formula_age_sq,
+  "Linear Age",
+  "Linear + Quadratic Age (Age^2)",
+  train, p_final
+)
+```
+
+We also compare Option 1 (Quadratic Polynomial `I(pet.Age^2)`) directly against Option 3 (Non-Linear Size Interaction `pet.Age:pet.Weight`):
+
+```{r}
+formula_age_weight <- paste0(base_formula, " + pet.Age:pet.Weight")
+
+compare_aic(
+  formula_age_sq,
+  formula_age_weight,
+  "Option 1: Quadratic Age (Age^2)",
+  "Option 3: Age x Weight Interaction",
+  train, p_final
+)
+```
+
+Option 1 (`I(pet.Age^2)`) produces a significantly lower AIC (163,290.5 vs 163,329.1). We retain Option 1 as our best formula.
+
+```{r}
+best_formula <- formula_age_sq
+best_formula
+```
+
+## Step 3: Interaction Terms from EDA
+
+### 3.1 Morphology & Build Density (`pet.Height` x `pet.Weight`)
+
+EDA showed that weight relative to height captures body build density / BMI (e.g., a 20-inch dog weighing 70 lbs vs 25 lbs). We test the interaction `pet.Height:pet.Weight`.
+
+```{r}
+formula_morphology <- paste0(best_formula, " + pet.Height:pet.Weight")
+
+compare_aic(
+  best_formula,
+  formula_morphology,
+  "Without Height:Weight",
+  "With Height:Weight",
+  train, p_final
+)
+```
+
+The morphology interaction term yields a dramatic reduction in AIC of 41.8 points (163,248.7 vs 163,290.5). We update the best formula.
+
+```{r}
+best_formula <- formula_morphology
+best_formula
+```
+
+### 3.2 Species-Specific Aging (`pet.Age` x `pet.Type`)
+
+EDA lines 810–862 demonstrated that dogs and cats exhibit different aging curve slopes. We test adding `pet.Age:pet.Type`.
+
+
+
+```{r}
+formula_age_type <- paste0(best_formula, " + pet.Age:pet.Type")
+
+compare_aic(
+  best_formula,
+  formula_age_type,
+  "Without Age:Type",
+  "With Age:Type",
+  train, p_final
+)
+```
+
+While biologically sound, `pet.Age:pet.Type` does not improve AIC once `I(pet.Age^2)` and `pet.Height:pet.Weight` are present (163,249.9 vs 163,248.7). We exclude it in favor of parsimony. Possibly because a large portion of deviance that could have been explained by this interaction is already being explained
+by `pet.Group`.
+
+### 3.3 High-Divergence Outlier Breed Rating (`breed_outlier`)
+
+In `3.eda.Rmd` (lines 673–749), our dumbbell plot analysis identified 24 high-volume breeds with extreme divergence (>50–60%) from their parent group benchmark pure premium. Out of these 24 outlier breeds, 23 are dogs (plus 1 hybrid cat, Chausie).
+
+Rather than expanding `pet.Breed` into 237 unconstrained dummy variables (which risks severe overfitting), we consolidate these outlier breeds into a parsimonious 3-tier factor (`Standard`, `Surcharge`, `Discount`), consuming only 2 degrees of freedom:
+
+```{r}
+# Top 24 outlier breeds identified in 3.eda.Rmd dumbbell plot
+surcharge_breeds <- c(
+  "Poodle", "Airedale Terrier", "Afghan Hound", "Bull Terrier", "Chausie",
+  "Kerry Blue Terrier", "Welsh Springer Spaniel", "Chow Chow", 
+  "Soft Coated Wheaten Terrier", "American Staffordshire Terrier", "Pointer", 
+  "Polish Lowland Sheepdog", "Collie", "Staffordshire Bull Terrier", 
+  "Black and Tan Coonhound", "Dalmatian"
+)
+
+discount_breeds <- c(
+  "Australian Terrier", "Pumi", "Shetland Sheepdog", "Beagle", 
+  "Pyrenean Shepherd", "Pembroke Welsh Corgi", "Rat Terrier", "Norfolk Terrier"
+)
+
+train <- train |>
+  mutate(
+    breed_outlier = factor(
+      case_when(
+        pet.Breed %in% surcharge_breeds ~ "Surcharge",
+        pet.Breed %in% discount_breeds  ~ "Discount",
+        TRUE ~ "Standard"
+      ),
+      levels = c("Standard", "Surcharge", "Discount")
+    )
+  )
+
+formula_outliers <- paste0(best_formula, " + breed_outlier")
+
+compare_aic(
+  best_formula,
+  formula_outliers,
+  "Without Outlier Breeds (Model D)",
+  "With Outlier Breed Tier (Model E)",
+  train, p_final
+)
+```
+
+## Step 4: Summary of Candidate Models
+
+We fit and compare all candidate models representing each modeling stage:
+
+```{r}
+model_C <- glm(as.formula(formula_age_sq), data = train, family = statmod::tweedie(var.power = p_final, link.power = 0))
+model_D <- glm(as.formula(formula_morphology), data = train, family = statmod::tweedie(var.power = p_final, link.power = 0))
+model_E <- glm(as.formula(formula_outliers), data = train, family = statmod::tweedie(var.power = p_final, link.power = 0))
+
+candidate_models <- list(
+  "Model A (Full Baseline)"               = model_A,
+  "Model B (Selected Main Effects)"       = model_B,
+  "Model C (+ Quadratic Age)"             = model_C,
+  "Model D (+ Morphology Interaction)"    = model_D,
+  "Model E (+ Outlier Breed Rating Tier)" = model_E
+)
+
+candidate_comparison <- tibble(
+  Model = names(candidate_models),
+  AIC = sapply(candidate_models, function(m) round(tweedie_AIC(m), 2)),
+  Residual_Deviance = sapply(candidate_models, function(m) round(m$deviance, 1)),
+  Pct_Dev_Explained = sapply(candidate_models, function(m) paste0(round((1 - m$deviance / m$null.deviance) * 100, 2), "%")),
+  Parameters = sapply(candidate_models, function(m) length(coef(m))),
+  Delta_AIC = sapply(candidate_models, function(m) round(tweedie_AIC(m) - tweedie_AIC(model_A), 2))
+)
+
+candidate_comparison
+```
+
+## Step 5: Review & Diagnostics of Selected Model (Model E)
+
+### Summary of Model E
+
+```{r}
+summary(model_E)
+```
+
+```{r}
+tidy(model_E) |> 
+  mutate(
+    coefficient = round(estimate, 4),
+    relativity  = round(exp(estimate), 4),
+    pct_change  = ifelse(term == "(Intercept)", NA, round((relativity - 1) * 100, 2))
+  ) |> 
+  arrange(p.value) |> 
+  select(term, coefficient, relativity, pct_change, p.value)
+```
+
+### Multicollinearity Check (VIF) on Model E
+
+```{r}
+vif_E <- vif(model_E)
+round(vif_E, 3)
+```
+
+## Step 6: Save Refined Models and Engineered Data
+
+```{r}
+saveRDS(model_C, "model_C.rds")
+saveRDS(model_D, "model_D.rds")
+saveRDS(model_E, "model_E.rds")
+write.csv(train, "data/train_engineered.csv", row.names = FALSE)
+cat("Models C, D, and E saved successfully along with train_engineered.csv\n")
+```
+

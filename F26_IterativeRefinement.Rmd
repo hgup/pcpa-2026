@@ -1,0 +1,444 @@
+---
+title: "CAS PCPA Practice Project"
+subtitle: "Iterative Model Refinement"
+
+---
+
+## Overview
+
+In this video we make targeted model adjustments based on the diagnostic
+findings from the previous video and recheck diagnostics after each
+adjustment. We test each adjustment individually and retain changes that
+improve model fit based on AICtweedie. The iterative nature of this
+process reflects how model building works in practice.
+
+---
+
+1. Load Libraries and Data
+
+Load tidyverse, statmod, and tweedie for modeling and diagnostics
+```{r}
+# install.packages("tidyverse")
+# install.packages("statmod")
+# install.packages("tweedie")
+library(tidyverse)
+library(statmod)
+library(tweedie)
+
+train   <- read_csv("train_residuals.csv")
+model_D <- readRDS("model_D.rds")
+p       <- readRDS("tweedie_p.rds")
+
+cat("Using Tweedie p:", round(p, 4), "\n")
+```
+
+---
+
+2. Re-apply Factor Levels
+
+Re-apply factor levels since they are not preserved when saving to CSV
+```{r}
+train <- train %>%
+  mutate(
+    gender            = factor(gender),
+    marital_status    = factor(marital_status),
+    coverage_type     = factor(coverage_type),
+    value_band        = factor(value_band, levels = c("0-10k", "10k-20k", "20k-35k", "35k-50k", "50k+")),
+    deductible        = factor(deductible),
+    make              = factor(make),
+    body_type         = factor(body_type),
+    vehicle_use       = factor(vehicle_use),
+    num_cylinders     = factor(num_cylinders),
+    anti_theft_device = factor(anti_theft_device),
+    safety_rating     = factor(safety_rating),
+    region            = factor(region),
+    urban_rural       = factor(urban_rural),
+    tort_environment  = factor(tort_environment),
+    catastrophe_risk  = factor(catastrophe_risk)
+  ) %>%
+  mutate(
+    gender            = relevel(gender, ref = "F"),
+    marital_status    = relevel(marital_status, ref = "Married"),
+    coverage_type     = relevel(coverage_type, ref = "Liability Only"),
+    value_band        = relevel(value_band, ref = "10k-20k"),
+    deductible        = relevel(deductible, ref = "500"),
+    make              = relevel(make, ref = "Toyota"),
+    body_type         = relevel(body_type, ref = "Sedan"),
+    vehicle_use       = relevel(vehicle_use, ref = "Pleasure"),
+    safety_rating     = relevel(safety_rating, ref = "3"),
+    urban_rural       = relevel(urban_rural, ref = "Suburban"),
+    tort_environment  = relevel(tort_environment, ref = "Moderate"),
+    catastrophe_risk  = relevel(catastrophe_risk, ref = "Medium")
+  )
+```
+
+---
+
+3. Define Helper Functions
+
+Create a function to print key fit statistics for any model
+```{r}
+model_summary <- function(model, label) {
+  cat(label, "\n")
+  cat("AIC:                 ", round(AICtweedie(model), 2), "\n")
+  cat("% Deviance Explained:", round((1 - model$deviance / model$null.deviance) * 100, 2), "%\n")
+  cat("\n")
+}
+```
+
+Create a function to plot deviance residuals vs fitted values for
+claimants only
+```{r}
+plot_resids <- function(model, data, title) {
+  data %>%
+    mutate(
+      fitted_vals  = predict(model, type = "response"),
+      deviance_res = residuals(model, type = "deviance")
+    ) %>%
+    filter(total_losses > 0) %>%
+    ggplot(aes(x = fitted_vals, y = deviance_res)) +
+    geom_point(alpha = 0.3, color = "steelblue") +
+    geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+    geom_smooth(method = "loess", color = "darkgreen", se = FALSE) +
+    labs(
+      title = title,
+      x     = "Fitted Values",
+      y     = "Deviance Residuals"
+    ) +
+    theme_minimal()
+}
+```
+
+---
+
+4. Baseline Diagnostic Recap
+
+Review Model D as the starting point before making any adjustments
+```{r}
+model_summary(model_D, "Model D (Baseline)")
+```
+
+Recheck the residual vs fitted plot
+```{r}
+train %>%
+  filter(total_losses > 0) %>%
+  ggplot(aes(x = fitted_values, y = deviance_resids)) +
+  geom_point(alpha = 0.3, color = "steelblue") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  geom_smooth(method = "loess", color = "darkgreen", se = FALSE) +
+  labs(
+    title = "Model D — Deviance Residuals vs Fitted Values (Claimants Only)",
+    x     = "Fitted Values",
+    y     = "Deviance Residuals"
+  ) +
+  theme_minimal()
+```
+
+Set the working model to Model D as the starting point
+```{r}
+model_working <- model_D
+```
+
+---
+
+5. Adjustment 1 — violations_3yr x prior_claims_3yr Interaction
+
+Violations and prior claims both capture driver risk history. Test
+whether their interaction improves model fit — a driver with both high
+violations and prior claims may represent compounding risk that a
+linear additive model does not capture.
+```{r}
+formula_viol_claims <- paste(
+  paste(deparse(formula(model_working)), collapse = " "),
+  "+ violations_3yr:prior_claims_3yr"
+)
+
+model_viol_claims <- glm(
+  as.formula(formula_viol_claims),
+  data   = train,
+  family = tweedie(var.power = p, link.power = 0)
+)
+
+cat("Working model AIC:                            ", round(AICtweedie(model_working), 2), "\n")
+cat("With violations:prior_claims interaction AIC: ", round(AICtweedie(model_viol_claims), 2), "\n")
+```
+
+Check residual plot after adding the interaction
+```{r}
+plot_resids(model_viol_claims, train,
+            "With violations:prior_claims Interaction (Claimants Only)")
+```
+
+Update working model if interaction improves AIC
+```{r}
+if (AICtweedie(model_viol_claims) < AICtweedie(model_working)) {
+  model_working <- model_viol_claims
+  cat("Interaction retained — AIC improved\n")
+} else {
+  cat("Interaction not retained — no AIC improvement\n")
+}
+```
+
+---
+
+6. Adjustment 2 — prior_claims_3yr as a Factor
+
+Prior claims is discrete and low-valued (0, 1, 2, 3+). Treating it
+as continuous assumes equal jumps between levels. Converting to a factor
+allows each level to have its own coefficient and may better capture
+the nonlinear effect particularly the large jump from 0 to 1 claim.
+
+Create prior claims factor variable
+```{r}
+train <- train %>%
+  mutate(
+    prior_claims_fct = factor(
+      case_when(
+        prior_claims_3yr == 0 ~ "0",
+        prior_claims_3yr == 1 ~ "1",
+        prior_claims_3yr == 2 ~ "2",
+        prior_claims_3yr >= 3 ~ "3+"
+      ),
+      levels = c("0", "1", "2", "3+")
+    )
+  )
+```
+
+Fit model replacing continuous prior_claims_3yr with factor version
+```{r}
+formula_prior_fct <- gsub(
+  "prior_claims_3yr",
+  "prior_claims_fct",
+  paste(deparse(formula(model_working)), collapse = " ")
+)
+
+model_prior_fct <- glm(
+  as.formula(formula_prior_fct),
+  data   = train,
+  family = tweedie(var.power = p, link.power = 0)
+)
+
+cat("Working model AIC:                    ", round(AICtweedie(model_working), 2), "\n")
+cat("With prior_claims as factor AIC:      ", round(AICtweedie(model_prior_fct), 2), "\n")
+```
+
+Review factor level coefficients to assess whether the relationship
+is truly nonlinear
+```{r}
+summary(model_prior_fct)$coefficients[grepl("prior_claims_fct", rownames(summary(model_prior_fct)$coefficients)), ]
+```
+
+Check residual plot
+```{r}
+plot_resids(model_prior_fct, train,
+            "With prior_claims as Factor (Claimants Only)")
+```
+
+Update working model if factor form improves AIC
+```{r}
+if (AICtweedie(model_prior_fct) < AICtweedie(model_working)) {
+  model_working <- model_prior_fct
+  cat("prior_claims factor retained — AIC improved\n")
+} else {
+  cat("prior_claims factor not retained — no AIC improvement\n")
+}
+```
+
+---
+
+7. Adjustment 3 — violations_3yr as a Factor
+
+Same reasoning as prior claims — violations is discrete and low-valued.
+Converting to a factor allows the model to capture potential nonlinearity
+in the violations effect.
+
+Create violations factor variable
+```{r}
+train <- train %>%
+  mutate(
+    violations_fct = factor(
+      case_when(
+        violations_3yr == 0 ~ "0",
+        violations_3yr == 1 ~ "1",
+        violations_3yr == 2 ~ "2",
+        violations_3yr >= 3 ~ "3+"
+      ),
+      levels = c("0", "1", "2", "3+")
+    )
+  )
+```
+
+Fit model replacing continuous violations_3yr with factor version
+```{r}
+formula_viol_fct <- gsub(
+  "violations_3yr",
+  "violations_fct",
+  paste(deparse(formula(model_working)), collapse = " ")
+)
+
+model_viol_fct <- glm(
+  as.formula(formula_viol_fct),
+  data   = train,
+  family = tweedie(var.power = p, link.power = 0)
+)
+
+cat("Working model AIC:                    ", round(AICtweedie(model_working), 2), "\n")
+cat("With violations as factor AIC:        ", round(AICtweedie(model_viol_fct), 2), "\n")
+```
+
+Review factor level coefficients
+```{r}
+summary(model_viol_fct)$coefficients[grepl("violations_fct", rownames(summary(model_viol_fct)$coefficients)), ]
+```
+
+Check residual plot
+```{r}
+plot_resids(model_viol_fct, train,
+            "With violations as Factor (Claimants Only)")
+```
+
+Update working model if factor form improves AIC
+```{r}
+if (AICtweedie(model_viol_fct) < AICtweedie(model_working)) {
+  model_working <- model_viol_fct
+  cat("violations factor retained — AIC improved\n")
+} else {
+  cat("violations factor not retained — no AIC improvement\n")
+}
+```
+
+---
+
+8. Adjustment 4 — gender x urban_rural Interaction
+
+Young males in urban areas are known to have disproportionately higher
+loss costs than either risk factor alone would suggest. Test whether
+this interaction improves model fit.
+```{r}
+formula_gender_urban <- paste(
+  paste(deparse(formula(model_working)), collapse = " "),
+  "+ gender:urban_rural"
+)
+
+model_gender_urban <- glm(
+  as.formula(formula_gender_urban),
+  data   = train,
+  family = tweedie(var.power = p, link.power = 0)
+)
+
+cat("Working model AIC:                       ", round(AICtweedie(model_working), 2), "\n")
+cat("With gender:urban_rural interaction AIC: ", round(AICtweedie(model_gender_urban), 2), "\n")
+```
+
+Check residual plot
+```{r}
+plot_resids(model_gender_urban, train,
+            "With gender:urban_rural Interaction (Claimants Only)")
+```
+
+Update working model if interaction improves AIC
+```{r}
+if (AICtweedie(model_gender_urban) < AICtweedie(model_working)) {
+  model_working <- model_gender_urban
+  cat("gender:urban_rural interaction retained — AIC improved\n")
+} else {
+  cat("gender:urban_rural interaction not retained — no AIC improvement\n")
+}
+```
+
+---
+
+9. Re-profile Tweedie p on the Best Model
+
+Now that variable selection and refinement are complete re-profile the
+Tweedie p on the working model to confirm the original estimate is still
+appropriate. The optimal p may shift slightly with a different predictor
+set.
+```{r}
+# install.packages("tweedie")
+p_recheck <- tweedie.profile(
+  formula(model_working),
+  p.vec   = seq(1.1, 1.9, by = 0.1),
+  data    = train,
+  do.plot = TRUE,
+  method  = "series"
+)
+
+cat("Original p:   ", round(p, 4), "\n")
+cat("Re-profiled p:", round(p_recheck$p.max, 4), "\n")
+```
+
+Refine the new p estimate over a narrower range
+```{r}
+p_new <- p_recheck$p.max
+
+p_refined <- tweedie.profile(
+  formula(model_working),
+  p.vec   = seq(p_new - 0.1, p_new + 0.1, by = 0.01),
+  data    = train,
+  do.plot = TRUE,
+  method  = "series"
+)
+
+p_final <- p_refined$p.max
+cat("Final re-profiled p:", round(p_final, 4), "\n")
+```
+
+---
+
+10. Refit Final Model with New p
+
+Refit the working model using the re-profiled p value
+```{r}
+model_final <- glm(
+  formula(model_working),
+  data   = train,
+  family = tweedie(var.power = p_final, link.power = 0)
+)
+```
+
+---
+
+11. AIC Comparison — Model D vs Final Model
+
+Compare the final model against Model D across key metrics
+```{r}
+cat("=== Model Comparison ===\n\n")
+cat("Model D AIC:     ", round(AICtweedie(model_D), 2), "\n")
+cat("Final Model AIC: ", round(AICtweedie(model_final), 2), "\n\n")
+cat("Model D % Deviance Explained:     ",
+    round((1 - model_D$deviance / model_D$null.deviance) * 100, 2), "%\n")
+cat("Final Model % Deviance Explained: ",
+    round((1 - model_final$deviance / model_final$null.deviance) * 100, 2), "%\n\n")
+cat("Original Tweedie p:    ", round(p, 4), "\n")
+cat("Re-profiled Tweedie p: ", round(p_final, 4), "\n")
+```
+
+Final residual plot to confirm improvement
+```{r}
+plot_resids(model_final, train,
+            "Final Model — Deviance Residuals vs Fitted Values (Claimants Only)")
+```
+
+---
+
+12. Save the Final Model
+
+Save the final model and updated p value
+```{r}
+saveRDS(model_final, "model_final.rds")
+saveRDS(p_final, "tweedie_p_final.rds")
+cat("Final model saved to model_final.rds\n")
+cat("Final p saved to tweedie_p_final.rds\n")
+```
+
+---
+
+## Key Observations
+
+- Each adjustment was tested individually using AICtweedie as the selection criterion — a lower AIC indicates a better balance of fit and complexity
+- The violations x prior_claims interaction tests whether compounding driver risk is captured better by an interaction term than by additive effects alone
+- Converting prior_claims and violations to factors allows the model to capture nonlinear jumps between levels — particularly the disproportionately large effect of going from zero to one claim or violation
+- The gender x urban_rural interaction tests whether the risk differential between genders is amplified in urban areas
+- Re-profiling Tweedie p after variable refinement confirms whether the distributional assumption remains appropriate with the final predictor set
+- The final AIC comparison against Model D documents the overall improvement from the iterative refinement process

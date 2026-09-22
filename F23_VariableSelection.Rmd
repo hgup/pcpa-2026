@@ -1,0 +1,223 @@
+---
+title: "CAS PCPA Practice Project"
+subtitle: "Variable Selection"
+---
+
+## Overview
+
+In this video we perform variable selection starting from the baseline
+model fit. We use drop1 with the Chi-square test to
+iteratively remove non-significant variables, then check VIF on the
+resulting model to identify any remaining multicollinearity concerns.
+The iterative nature of this process reflects how variable selection
+is done in practice - each removal is a documented, justified decision.
+
+---
+
+1. Load Libraries
+
+Load tidyverse, statmod, car, and tweedie for modeling and diagnostics
+```{r}
+# install.packages("tidyverse")
+# install.packages("statmod")
+# install.packages("car")
+# install.packages("tweedie")
+library(tidyverse)
+library(statmod)
+library(car)
+library(tweedie)
+```
+
+---
+
+2. Load the Data and Baseline Model
+
+Read the training set with factors already applied, Tweedie p, and
+baseline model into R
+```{r}
+train   <- read_csv("train_modela.csv")
+p       <- readRDS("tweedie_p.rds")
+model_A <- readRDS("model_A.rds")
+
+cat("Using Tweedie p:", round(p, 4), "\n")
+cat("Baseline AIC:", round(AICtweedie(model_A), 2), "\n")
+```
+
+---
+
+3. Re-apply Factor Levels
+
+Factor levels are not preserved when saving to CSV so we need to
+re-apply them after loading
+```{r}
+train <- train %>%
+  mutate(
+    gender            = factor(gender),
+    marital_status    = factor(marital_status),
+    coverage_type     = factor(coverage_type),
+    deductible        = factor(deductible),
+    make              = factor(make),
+    body_type         = factor(body_type),
+    vehicle_use       = factor(vehicle_use),
+    num_cylinders     = factor(num_cylinders),
+    anti_theft_device = factor(anti_theft_device),
+    safety_rating     = factor(safety_rating),
+    region            = factor(region),
+    urban_rural       = factor(urban_rural),
+    tort_environment  = factor(tort_environment),
+    catastrophe_risk  = factor(catastrophe_risk)
+  ) %>%
+  mutate(
+    gender            = relevel(gender, ref = "F"),
+    marital_status    = relevel(marital_status, ref = "Married"),
+    coverage_type     = relevel(coverage_type, ref = "Liability Only"),
+    deductible        = relevel(deductible, ref = "500"),
+    make              = relevel(make, ref = "Toyota"),
+    body_type         = relevel(body_type, ref = "Sedan"),
+    vehicle_use       = relevel(vehicle_use, ref = "Pleasure"),
+    safety_rating     = relevel(safety_rating, ref = "3"),
+    urban_rural       = relevel(urban_rural, ref = "Suburban"),
+    tort_environment  = relevel(tort_environment, ref = "Moderate"),
+    catastrophe_risk  = relevel(catastrophe_risk, ref = "Medium")
+  )
+```
+
+---
+
+4. Initial drop1
+
+Run drop1 on the baseline model to assess the contribution of each
+variable. Variables with high p-values are candidates for removal.
+We remove the least significant variable first and repeat.
+```{r}
+drop1(model_A, test = "Chisq")
+```
+
+---
+
+5. Iterative Variable Removal
+
+Remove the least significant variable identified by drop1 and refit.
+Update the variable name based on your drop1 output each time and
+repeat until all remaining variables have p-values below 0.05.
+
+Round 0 - remove 'make' due to VIF
+```{r}
+model_current <- update(model_A, . ~ . - make)
+drop1(model_current, test = "Chisq")
+```
+
+Round 1 - remove the least significant variable
+```{r}
+model_current <- update(model_current, . ~ . - anti_theft_device)
+drop1(model_current, test = "Chisq")
+```
+
+Round 2 - remove the next least significant variable if applicable
+```{r}
+model_current <- update(model_current, . ~ . - num_cylinders)
+drop1(model_current, test = "Chisq")
+```
+
+Round 3 - continue until all remaining variables are significant
+```{r}
+model_current <- update(model_current, . ~ . - marital_status)
+drop1(model_current, test = "Chisq")
+```
+
+Round 4
+```{r}
+model_current <- update(model_current, . ~ . - body_type)
+drop1(model_current, test = "Chisq")
+```
+
+Round 5
+```{r}
+model_current <- update(model_current, . ~ . - deductible)
+drop1(model_current, test = "Chisq")
+```
+
+Round 6
+```{r}
+model_current <- update(model_current, . ~ . - safety_rating)
+drop1(model_current, test = "Chisq")
+```
+
+Round 7
+```{r}
+model_current <- update(model_current, . ~ . - age)
+drop1(model_current, test = "Chisq")
+```
+
+Round 7
+```{r}
+model_B <- model_current
+model_current <- update(model_current, . ~ . - vehicle_use)
+drop1(model_current, test = "Chisq")
+```
+
+---
+
+6. Review Model After Variable Selection
+
+Print the summary of the model after variable selection
+```{r}
+summary(model_current)
+model_C <- model_current
+```
+
+Review fit statistics comparing baseline to selected model
+```{r}
+cat("Baseline AIC:        ", round(AICtweedie(model_A), 2), "\n")
+cat("Model B AIC:  ", round(AICtweedie(model_B), 2), "\n")
+cat("Model C AIC:  ", round(AICtweedie(model_C), 2), "\n")
+cat("% Deviance Explained:", round((1 - model_current$deviance / model_current$null.deviance) * 100, 2), "%\n")
+```
+
+---
+
+7. Check VIF on Selected Model
+
+Check VIF on the model after variable selection to identify any
+remaining multicollinearity concerns
+```{r}
+vif_results <- vif(model_C)
+round(vif_results, 3)
+```
+
+---
+
+8. Final Review of Selected Model
+
+Print the final model summary after all variable selection decisions
+```{r}
+summary(model_C)
+```
+
+Review final fit statistics
+```{r}
+cat("Baseline AIC:             ", round(AICtweedie(model_A), 2), "\n")
+cat("Model C AIC: ", round(AICtweedie(model_C), 2), "\n")
+cat("% Deviance Explained:     ", round((1 - model_current$deviance / model_current$null.deviance) * 100, 2), "%\n")
+```
+
+---
+
+10. Save the Selected Model
+
+Save the selected model for use in subsequent scripts
+```{r}
+saveRDS(model_C, "model_C.rds")
+cat("Selected model saved to model_C.rds\n")
+```
+
+---
+
+## Key Observations
+
+- Variable selection was performed using drop1 with the Chi-square test starting from the baseline model fit in Video 15
+- Variables were removed one at a time in order of least significance until all remaining variables had p-values below 0.05
+- VIF was checked after variable selection to identify any remaining multicollinearity concerns
+- If make had a high VIF and showed weak signal in the mean pure premium analysis it was dropped as a deliberate documented decision
+- The iterative drop1 process reflects how variable selection is done in practice and demonstrates the kind of systematic judgment the PCPA project expects
+- The selected model is carried forward into Video 17 where we perform feature engineering on surviving variables
