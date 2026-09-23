@@ -154,12 +154,20 @@ check_for_outliers( raw_policy, c("policy.Exposure"), "Policy" )
 
 # Clean Policy: filter out zero-exposure policies, parse dates, standardize NBRB
 policy <- raw_policy |>
-  filter(policy.Exposure > 0) |>
+  # Deduplicate
+  summarize(
+    across(everything(), ~ na.omit(.x)[1]),
+    .by = policy.ID
+  ) |> 
+  filter(policy.Exposure > 0, !is.na(policy.Exposure)) |>
+  # Recode
   mutate(
     policy.Start = lubridate::date_decimal(policy.Start),
     policy.End = lubridate::date_decimal(policy.End),
     policy.NBRB = case_match(policy.NBRB, "NewBus" ~ "NB", "RenBus" ~ "RB", .default = policy.NBRB)
   )
+
+cat(glue("{nrow(raw_policy) - nrow(policy)} rows removed"))
 
 ## 2.2 Pets Data ===============================================================
 
@@ -210,6 +218,9 @@ raw_pet |> filter(pet.Breed %in% extra_dog_breeds) |> count(pet.Breed, sort = TR
 
 # Clean Pets: standardize categorical miscodings, deduplicate resolving conflicts via non-NA
 pets <- raw_pet |> 
+  distinct() |>
+  group_by(pet.ID) |> 
+  summarize(across(everything(), ~ na.omit(.x)[1]),.groups = "drop") |> 
   mutate(
     # The missing pet.Type can be inferred if pet.Group, 
     pet.Type = case_when(
@@ -221,10 +232,7 @@ pets <- raw_pet |>
     pet.Group = case_match(pet.Group, "Non-sporting" ~ "Non-Sporting", .default = pet.Group),
     pet.Gender = case_match(pet.Gender, "F" ~ "Female", "M" ~ "Male", .default = pet.Gender),
     pet.Microchip = case_match(pet.Microchip, "Nope" ~ "No", "Y" ~ "Yes", .default = pet.Microchip)
-  ) |> 
-  distinct() |>
-  group_by(pet.ID) |> 
-  summarize(across(everything(), ~ na.omit(.x)[1]),.groups = "drop")
+  )
 
 
 ## 2.3 Owners Data =============================================================
@@ -523,8 +531,9 @@ cat_vars <- train |> select(where(is.character), -matches("ID|Breed"))
 cols <- names(cat_vars)
 cramer_matrix <- outer(cols, cols,
    Vectorize(function(i, j) {
-    cramerV(cat_vars[[i]], cat_vars[[j]], bias.correct = TRUE) 
+    rcompanion::cramerV(cat_vars[[i]], cat_vars[[j]], bias.correct = TRUE) 
    }))
+
 dimnames(cramer_matrix) <- list(cols, cols)
 corrplot(cramer_matrix, method = "color", type = "upper",
   is.corr = FALSE, col.lim = c(0, 1), addCoef.col = "black",
@@ -727,6 +736,34 @@ train |>
   ) +
   theme_minimal()
 
+#### 3.5.4.e pet.Height x pet.Weight ===========================================
+
+# 2D Quartile Grid: Exposure-weighted Pure Premium
+hw_diag <- train |>
+  mutate(
+    h_q = factor(ntile(pet.Height, 4), labels = paste0("H_Q", 1:4)),
+    w_q = factor(ntile(pet.Weight, 4), labels = paste0("W_Q", 1:4))
+  ) |>
+  summarize(pp = round(sum(total_losses) / sum(policy.Exposure), 1), .by = c(h_q, w_q)) |>
+  arrange(h_q, w_q)
+
+hw_diag |> pivot_wider(names_from = w_q, values_from = pp) |> print()
+
+hw_diag |>
+  ggplot(aes(x = w_q, y = pp, color = h_q, group = h_q)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  labs(
+    title    = "Empirical Interaction: pet.Height \u00d7 pet.Weight (Quartiles)",
+    subtitle = "Non-parallel / crossing slopes prove the interaction exists in raw data",
+    x        = "Weight Quartile",
+    y        = "Exposure-Weighted Pure Premium ($)",
+    color    = "Height Quartile"
+  ) +
+  theme_minimal()
+
+
 ## 3.5 Feature Engineering =====================================================
 
 apply_feature_engineering <- function(df) {
@@ -826,11 +863,11 @@ p_prof_ref <- tweedie.profile(
   total_losses ~ 1,
   p.vec   = seq(p_prof_init$p.max - 0.1, p_prof_init$p.max + 0.1, by = 0.01),
   data    = train,
-  do.plot = FALSE,
+  do.plot = TRUE,
   method  = "series"
 )
 p_initial <- p_prof_ref$p.max
-cat("Initial Tweedie p:", round(p_initial, 4), "\n")
+glue("Initial Tweedie p: {round(p_initial, 4)}")
 
 ## Model A: Full Baseline GLM ==================================================
 # (excluding pet.Breed for high cardinality and pet.Type for exact aliasing with pet.Group)
@@ -845,12 +882,26 @@ model_A <- glm(
 
 show_tweedie_summary(model_A, "Model A (Baseline)", p_initial)
 
+# Beta coefficient of pet.Age
+coef(model_A)["pet.Age"]
+
+summary(model_A)
+alias(model_A)
+vif_results <- vif(model_A)
+round(vif_results, 3)
+
+# Thought Height and Weight exhibit bivariate correlation of r = 0.89, their
+# VIF = 8.61 and 5.96 remain below the standard threshold of 10. Even in a large
+# dataset the standard errors remain very precise 
+
 
 ##  Model B: Backward Variable Selection =======================================
 # (using drop1 Chi-square test (p < 0.05))
 
 # Implement Backward selection
 backward_selection <- function(base_model = model_A, threshold = 0.05){
+  # Using chisq test to test if the entire variable improves the model
+  
   print(glue("{strrep('=',100)}"))
   print(glue("Backward selection: Remove least significant variables until remaining have p-values < {threshold}"))
   print(glue("{strrep('=',100)}"))
@@ -881,6 +932,12 @@ model_B <- backward_selection()
 show_tweedie_summary(model_B, "Model B (Backward Selection)", p_initial)
 (base_formula <- deparse1(formula(model_B)))
 
+# Beta coefficient of pet.Age
+coef(model_B)["pet.Age"]
+
+# Thought Height and Weight exhibit bivariate correlation of r = 0.89, their
+# VIF = 8.61 and 5.96
+
 ## Model B1: Add Binned Predictors =======================================================
 
 compare_aic_and_return_better_model(
@@ -897,7 +954,7 @@ best_formula <- base_formula
 
 formula_age_sq <- glue("{best_formula} + I(pet.Age^2)")
 model_C <- compare_aic_and_return_better_model(
-  base_formula,
+  best_formula,
   formula_age_sq,
   "Linear Age",
   "Linear + Quadratic Age (Age^2)",
@@ -911,7 +968,7 @@ show_tweedie_summary(model_C, "Model C (Quadratic Age effect)", p_initial)
 
 formula_age_weight <- glue("{best_formula} + pet.Height:pet.Weight")
 model_D <- compare_aic_and_return_better_model(
-  base_formula,
+  best_formula,
   formula_age_weight,
   "Quadratic Age (Age^2)",
   "Age x Weight Interaction",
@@ -923,14 +980,15 @@ show_tweedie_summary(model_D, "Model D (Height x Weight interaction)", p_initial
 
 ## Model E: Add Outlier Breed Rating Tier ======================================
 
-formula_age_weight <- glue("{best_formula} + breed_outlier")
+formula_breed_outlier <- glue("{best_formula} + breed_outlier")
 model_E <- compare_aic_and_return_better_model(
-  base_formula,
-  formula_age_weight,
+  best_formula,
+  formula_breed_outlier,
   "Height x Weight Interaction",
   "3 Tier Breed surcharge",
   train, p_initial
 )
+best_formula <- formula_breed_outlier
 show_tweedie_summary(model_E, "Model E (Breed Rating)", p_initial)
 
 ## Summary of Candidate Models =================================================
@@ -984,6 +1042,7 @@ plot_dev_res_vs_var <- function(.data, var, x_lab, y_lab){
     geom_point(alpha = 0.2, color = "steelblue") +
     geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
     geom_smooth(formula = y ~ x, method = "loess", color = "darkgreen", se = FALSE) +
+    #coord_cartesian(ylim = c(-12, 10)) +
     labs(
       title = glue("{y_lab} vs {x_lab}"),
       x = x_lab,
@@ -998,12 +1057,12 @@ train_residuals |> plot_dev_res_vs_var(fitted_values, "Fitted Values", "Deviance
 
 ### 5.1.2 Deviance Residuals Summary ===========================================
 (residual_summary <- train_residuals |> 
-  group_by(decile) |> 
-  summarize(
-    n_policies = n(),
-    mean_resid = round(mean(deviance_resids),4),
-    median_resid = round(median(deviance_resids),4)
-  )
+   group_by(decile) |> 
+   summarize(
+     n_policies = n(),
+     mean_resid = round(mean(deviance_resids),4),
+     median_resid = round(median(deviance_resids),4)
+   )
 )
 residual_summary |> 
   ggplot(aes(x = decile, y = mean_resid)) +
@@ -1021,9 +1080,12 @@ residual_summary |>
 train_residuals |> plot_dev_res_vs_var(pet.Age, "Pet Age", "Deviance Residuals")
 train_residuals |> plot_dev_res_vs_var(pet.Group, "Pet Group", "Deviance Residuals")
 train_residuals |> plot_dev_res_vs_var(pet.Gender, "Pet Gender", "Deviance Residuals")
-train_residuals |> plot_dev_res_vs_var(pet.Height, "Pet Height", "Deviance Residuals")
-train_residuals |> plot_dev_res_vs_var(pet.Weight, "Pet Weight", "Deviance Residuals")
+train_residuals |> plot_dev_res_vs_var(pet.Height, "Pet Height (inch)", "Deviance Residuals")
+train_residuals |> plot_dev_res_vs_var(pet.Weight, "Pet Weight (pound)", "Deviance Residuals")
 train_residuals |> plot_dev_res_vs_var(policy.NBRB, "Policy NBRB", "Deviance Residuals")
+
+# Height appears to have larger deviance residuals at extremes of heights (short and tall)
+# compared to medium heights
 
 ## 5.2 Q-Q Normality Plot ======================================================
 
@@ -1117,7 +1179,18 @@ train_residuals |>
     y = "Leverage"
   ) + theme_minimal()
 
+
+# Top Influential observations
+train_residuals |> 
+  filter(leverage > lev_threshold) |> 
+  arrange(desc(leverage)) |> 
+  select(policy.ID , pure_premium, fitted_values, leverage,
+         pet.Height, pet.Weight) |> 
+  head(20)
+
+
 ## 5.4 Segment Level Diagnostics ===============================================
+
 segment_diagnostic <- function(var){
   var_name <- rlang::as_name(ensym(var))
   seg_diag <- train_residuals |> 
@@ -1139,18 +1212,44 @@ segment_diagnostic(breed_outlier)
 
 ## 5.5 Iterative Refinement ====================================================
 
-# Model F: Add Quadratic Height I(pet.Height^2) to capture non-linear stature/volume scaling
-model_F <- update(model_E, . ~ . + I(pet.Height^2))
-cat("Model F (+ Quadratic Height) AIC:", round(tweedie_AIC(model_F), 2), "\n")
+# We go back to (3.5.4.e) and found out that pet.Height:pet.Weight 
+# is an interaction worth noting
 
-# Confirm Tweedie distributional assumption using Dunn-Smyth (randomized quantile) residuals
-q_resids <- statmod::qresid(model_F)
-cat("Dunn-Smyth Quantile Residuals Summary (centered near 0 with standard normal quantiles):\n")
-print(summary(q_resids))
+# Likelihood ratio Chi-square test for pet.Height:pet.Weight
+anova(
+  glm(total_losses ~ pet.Height + pet.Weight + offset(log(policy.Exposure)), data = train, family = statmod::tweedie(var.power = p_initial, link.power = 0)),
+  glm(total_losses ~ pet.Height * pet.Weight + offset(log(policy.Exposure)), data = train, family = statmod::tweedie(var.power = p_initial, link.power = 0)),
+  test = "Chisq"
+)
+# Test suggests that pet.Height:pet.Weight is significant, and we should add it to
+# the model.
 
-# Re-profile Tweedie p on the refined model formula
+
+### 5.5.1 Add Quadratic Height ===============================================
+# I(pet.Height^2) to capture non-linear stature/volume scaling
+
+formula_height_sq <- glue("{best_formula} + I(pet.Height^2)")
+model_F <- compare_aic_and_return_better_model(
+  best_formula,
+  formula_height_sq,
+  "breed_",
+  "Linear + Quadratic Age (Age^2)",
+  train, p_initial
+)
+# AIC has improved drastically by adding squared age
+best_formula <- formula_height_sq
+show_tweedie_summary(model_F, "Model C (Quadratic Age effect)", p_initial)
+
+# pet.Height seems to have p>0.05 (not significant), but I(pet.Height^2)
+# and pet.Height:pet.Weight are statistically significant, thus owing to
+# the prinicpe of Marginality, we will retain pet.Height in the model.
+summary(model_F)
+
+model_final <- model_F
+
+### 5.5.2 Re-profile Tweedie p on the refined model formula ====================
 p_recheck <- tweedie.profile(
-  formula(model_F),
+  formula(model_final),
   p.vec   = seq(1.2, 1.6, by = 0.05),
   data    = train,
   do.plot = FALSE,
@@ -1161,21 +1260,33 @@ p_refined <- tweedie.profile(
   formula(model_F),
   p.vec   = seq(p_recheck$p.max - 0.05, p_recheck$p.max + 0.05, by = 0.01),
   data    = train,
-  do.plot = FALSE,
+  do.plot = TRUE,
   method  = "series"
 )
 p_final <- p_refined$p.max
-cat("Re-profiled Final Tweedie p:", round(p_final, 4), "\n")
+glue("Re-profiled Final Tweedie p: {round(p_final, 4)}")
 
-# Fit Final Model with re-profiled p = 1.3173
+### 5.5.3 Fit Final Model with re-profiled p ===========================
 model_final <- glm(
-  formula(model_F),
+  best_formula,
   data   = train,
   family = statmod::tweedie(var.power = p_final, link.power = 0)
 )
-cat("Final Model AIC:", round(tweedie_AIC(model_final), 2), "\n")
-cat("Final Model % Deviance Explained:",
-    round((1 - model_final$deviance / model_final$null.deviance) * 100, 2), "%\n")
+
+summary(model_final)
+
+relativities <- data.frame(
+  term        = names(coef(model_final)),
+  coefficient = round(coef(model_final), 4),
+  relativity  = round(exp(coef(model_final)), 4),
+  std_error   = round(summary(model_final)$coefficients[, 2], 4),
+  p_value     = round(summary(model_final)$coefficients[, 4], 4)
+) %>%
+  mutate(significant = ifelse(p_value < 0.05, "Yes", "No"))
+
+print(relativities, row.names = FALSE)
+
+show_tweedie_summary(model_final, "Final Model", p_initial)
 
 # ================== 6. Holdout Validation on Test Data ========================
 
@@ -1183,11 +1294,35 @@ cat("Final Model % Deviance Explained:",
 test$predicted_losses <- predict(model_final, newdata = test, type = "response")
 test$predicted_pp     <- test$predicted_losses / test$policy.Exposure
 
-# Double Lift Analysis across 10 deciles sorted by predicted-to-benchmark pure premium
+## 6.1 Mean Squared Error ======================================================
+
+test |>
+  mutate(
+    pred_final = predicted_losses,
+    pred_base  = predict(model_A, newdata = test, type = "response")
+  ) |>
+  summarise(
+    MSE_Base    = mean((total_losses - pred_base)^2),
+    MSE_Final   = mean((total_losses - pred_final)^2),
+    RMSE_Base   = sqrt(MSE_Base),
+    RMSE_Final  = sqrt(MSE_Final)
+  ) |>
+  pivot_longer(
+    everything(),
+    names_to = c("Metric", "Model"),
+    names_sep = "_"
+  ) |>
+  pivot_wider(names_from = Model, values_from = value)
+
+
+## 6.2 Double Lift Analysis =====================================================
+# across 10 deciles sorted by predicted-to-benchmark pure premium
+
 benchmark_pp <- mean(test$pure_premium)
 test$decile  <- ntile(test$predicted_pp / benchmark_pp, 10)
 
 double_lift <- test |>
+  group_by(decile) |> 
   summarize(
     n_policies        = n(),
     exposure          = sum(policy.Exposure),
@@ -1196,29 +1331,74 @@ double_lift <- test |>
     mean_actual_pp    = round(actual_losses / exposure, 2),
     mean_predicted_pp = round(predicted_losses / exposure, 2),
     ae_ratio          = round(actual_losses / predicted_losses, 3),
-    .by               = decile,
     .groups           = "drop"
   )
-cat("\n=== Holdout Decile Calibration & Double Lift ===\n")
+print_header("Holdout Decile Calibration & Double Lift")
 print(as.data.frame(double_lift))
 
-# Gini Coefficient Calculation
-gini_df <- test |>
-  arrange(predicted_pp) |>
+# Double Lift chart
+double_lift |> 
+  pivot_longer(
+    cols = c(mean_actual_pp, mean_predicted_pp),
+    names_to = "type",
+    values_to = "pure_premium"
+  ) |> 
   mutate(
-    cum_exp  = cumsum(policy.Exposure) / sum(policy.Exposure),
-    cum_loss = cumsum(total_losses) / sum(total_losses)
+    type = case_when(
+      type == "mean_actual_pp" ~ "Actual",
+      type == "mean_predicted_pp" ~ "Predicted"
+    )
+  ) |> 
+  ggplot(aes(x = decile, y = pure_premium, color = type, group = type)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_x_continuous(breaks = 1:10) +
+  scale_color_manual(values = c("Actual" = "steelblue", "Predicted" = "darkgreen")) +
+  labs(
+    title = "Double Lift Curve",
+    subtitle = "Policies sorted by predicted-to-benchmark ratio and grouped into deciles",
+    x = "Decile (1 = Lowest Predicted Risk, 10 = Highest Predicted Risk)",
+    y = "Mean Pure Premium ($)",
+    color = NULL
+  ) + theme_minimal()
+
+## 6.3 Gini Coefficient & Lorenz Curves ========================================
+
+{# Gini Coefficient Calculation
+  gini_df <- test |>
+    arrange(predicted_pp) |>
+    mutate(
+      cum_exp  = cumsum(policy.Exposure) / sum(policy.Exposure),
+      cum_loss = cumsum(total_losses) / sum(total_losses)
+    )
+  n_obs <- nrow(gini_df)
+  gini_area <- sum(
+    (gini_df$cum_exp[2:n_obs] - gini_df$cum_exp[1:(n_obs - 1)]) *
+      (gini_df$cum_loss[2:n_obs] + gini_df$cum_loss[1:(n_obs - 1)]) / 2
   )
+  gini_coef <- 1 - 2 * gini_area
+  cat("\n",glue("Holdout Gini Coefficient: {round(gini_coef,4)}"))
+}
 
-n_obs <- nrow(gini_df)
-gini_area <- sum(
-  (gini_df$cum_exp[2:n_obs] - gini_df$cum_exp[1:(n_obs - 1)]) *
-  (gini_df$cum_loss[2:n_obs] + gini_df$cum_loss[1:(n_obs - 1)]) / 2
-)
-gini_coef <- 1 - 2 * gini_area
-cat(sprintf("Holdout Gini Coefficient: %.4f\n", gini_coef))
+# Since, gini > 0.4, it's a quite strong relationship.
+# This model has a strong discrimination power.
 
-# ====== 7. Scoring Assessment Data Set (assessment-data.csv -> scored.csv) ===
+gini_df |> 
+  ggplot(aes(x = cum_exp, y = cum_loss)) +
+  geom_line(color = "steelblue", linewidth = 1) +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed", linewidth = 1) +
+  labs(
+    title = "Lorenz Curve - Cumualtive Loss Share vs Cumulative Exposure Share",
+    x = "Cumulative Exopsure Share",
+    y = "Cumulative Loss Share"
+  ) +
+  theme_minimal()
+
+
+
+# ===================== 7. Scoring Assessment Data Set =========================
+#  (assessment-data.csv -> scored.csv) 
 
 # Load assessment dataset (unseen production data)
 assess_raw <- read.csv("data/assessment-data.csv")
@@ -1250,5 +1430,11 @@ scored_output <- assess_clean |>
   select(policy.ID, PPP)
 
 write.csv(scored_output, "scored.csv", row.names = FALSE)
-cat(sprintf("Scored %d records. File saved to scored.csv\n", nrow(scored_output)))
+cat(glue("Scored {nrow(scored_output)} records. File saved to scored.csv","\n"))
 
+# Average pure premium from assessment data: 238.7725
+assess_clean |> 
+  summarise(
+    portfolio_mean_pp = sum(PPP * policy.Exposure)/sum(policy.Exposure),
+    average_pp_per_policy = mean(PPP)
+  )

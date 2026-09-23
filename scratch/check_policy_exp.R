@@ -1,0 +1,7 @@
+raw_policy <- read.csv("data/policy-data.csv")
+cat("Summary of policy.Exposure:\n")
+print(summary(raw_policy$policy.Exposure))
+cat("Total rows:", nrow(raw_policy), "\n")
+cat("Rows with Exposure <= 0:", sum(raw_policy$policy.Exposure <= 0), "\n")
+cat("Rows with Exposure == 0:", sum(raw_policy$policy.Exposure == 0), "\n")
+cat("Any NAs:", sum(is.na(raw_policy$policy.Exposure)), "\n")
